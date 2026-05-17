@@ -5,6 +5,15 @@ from app.services.price_fetcher import fetch_asset_metadata
 
 router = APIRouter(prefix="/api/assets", tags=["assets"])
 
+
+@router.get("/markets")
+def list_markets():
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, mic, name, country FROM markets ORDER BY id"
+    ).fetchall()
+    return [{"id": r[0], "mic": r[1], "name": r[2], "country": r[3]} for r in rows]
+
 # Map ticker suffix to market MIC
 _SUFFIX_TO_MIC = {
     ".DE": "XETR",

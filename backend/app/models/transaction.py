@@ -13,12 +13,13 @@ class TransactionCreate(BaseModel):
     broker: str
     shares: float
     price: float
-    price_eur: float
     currency: str = "EUR"
     commission: float = 0.0
-    commission_eur: float = 0.0
     date: date
     notes: Optional[str] = None
+    # Computed on the backend from FX table; only send if you already know them
+    price_eur: Optional[float] = None
+    commission_eur: Optional[float] = None
 
     @field_validator("type")
     @classmethod

@@ -116,6 +116,15 @@ def create_transaction(body: TransactionCreate):
                 detail=f"Saldo insuficiente: tienes {current:g} participaciones, intentas vender {body.shares:g}",
             )
 
+    # Compute EUR values from FX table when not provided by caller
+    from app.services.currency import get_rate_to_eur
+    try:
+        rate = get_rate_to_eur(conn, body.currency, body.date)
+    except ValueError:
+        rate = 1.0  # no FX data yet — fallback; will be corrected after price refresh
+    price_eur = body.price_eur if body.price_eur is not None else body.price * rate
+    commission_eur = body.commission_eur if body.commission_eur is not None else body.commission * rate
+
     conn.execute(
         """
         INSERT INTO transactions VALUES (
@@ -124,8 +133,8 @@ def create_transaction(body: TransactionCreate):
         """,
         [
             body.asset_id, body.type, body.broker, body.shares,
-            body.price, body.price_eur, body.currency,
-            body.commission, body.commission_eur, body.date, body.notes,
+            body.price, price_eur, body.currency,
+            body.commission, commission_eur, body.date, body.notes,
         ],
     )
 

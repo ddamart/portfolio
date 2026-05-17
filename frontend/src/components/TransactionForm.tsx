@@ -1,14 +1,27 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import toast from 'react-hot-toast'
-import type { Asset, Transaction, TransactionCreate } from '../api/client'
-import { assetsApi, transactionsApi } from '../api/client'
+import type { Asset, Market, Transaction, TransactionCreate } from '../api/client'
+import { assetsApi, pricesApi, transactionsApi } from '../api/client'
 
 const BROKERS = [
-  { value: 'openbank', label: 'Openbank' },
-  { value: 'trade_republic', label: 'Trade Republic' },
-  { value: 'revolut', label: 'Revolut' },
-  { value: 'degiro', label: 'Degiro' },
+  { value: 'openbank',        label: 'Openbank' },
+  { value: 'trade_republic',  label: 'Trade Republic' },
+  { value: 'revolut',         label: 'Revolut' },
+  { value: 'degiro',          label: 'Degiro' },
 ]
+
+const ASSET_TYPES = [
+  { value: 'stock', label: 'Acción' },
+  { value: 'etf',   label: 'ETF' },
+  { value: 'fund',  label: 'Fondo' },
+]
+
+// Default currency per market MIC
+const MARKET_CURRENCY: Record<string, string> = {
+  XETR: 'EUR', XAMS: 'EUR', XMAD: 'EUR', CNMV: 'EUR',
+  XLON: 'GBP',
+  XNYS: 'USD', XNAS: 'USD',
+}
 
 interface Props {
   existing?: Transaction
@@ -16,86 +29,146 @@ interface Props {
   onSaved: () => void
 }
 
+interface NewAssetDraft {
+  ticker: string
+  name: string
+  type: 'stock' | 'etf' | 'fund'
+  market_id: number | null
+  currency: string
+  manual_price: boolean
+}
+
 export function TransactionForm({ existing, onClose, onSaved }: Props) {
   const today = new Date().toISOString().slice(0, 10)
-  const [assets, setAssets] = useState<Asset[]>([])
-  const [assetSearch, setAssetSearch] = useState(existing?.asset_ticker ?? '')
+
+  // --- asset selection ---
+  const [assetQuery, setAssetQuery] = useState(existing?.asset_ticker ?? '')
   const [assetResults, setAssetResults] = useState<Asset[]>([])
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null)
-  const [form, setForm] = useState({
-    type: existing?.type ?? 'buy',
-    broker: existing?.broker ?? 'degiro',
-    shares: existing?.shares?.toString() ?? '',
-    price: existing?.price?.toString() ?? '',
-    price_eur: existing?.price_eur?.toString() ?? '',
-    currency: existing?.currency ?? 'EUR',
-    commission: existing?.commission?.toString() ?? '0',
-    commission_eur: existing?.commission_eur?.toString() ?? '0',
-    date: existing?.date ?? today,
-    notes: existing?.notes ?? '',
-  })
-  const [saving, setSaving] = useState(false)
   const [showNewAsset, setShowNewAsset] = useState(false)
-  const [newAsset, setNewAsset] = useState<{ name: string; ticker: string; type: 'stock' | 'etf' | 'fund'; currency: string; manual_price: boolean }>({ name: '', ticker: '', type: 'stock', currency: 'EUR', manual_price: false })
+  const [newAsset, setNewAsset] = useState<NewAssetDraft>({
+    ticker: '', name: '', type: 'stock', market_id: null, currency: 'EUR', manual_price: false,
+  })
+  const [markets, setMarkets] = useState<Market[]>([])
+  const [creatingAsset, setCreatingAsset] = useState(false)
+  const dropdownRef = useRef<HTMLDivElement>(null)
 
+  // --- transaction fields ---
+  const [txType, setTxType]     = useState<'buy' | 'sell'>(existing?.type ?? 'buy')
+  const [broker, setBroker]     = useState(existing?.broker ?? 'degiro')
+  const [date, setDate]         = useState(existing?.date ?? today)
+  const [shares, setShares]     = useState(existing?.shares?.toString() ?? '')
+  const [price, setPrice]       = useState(existing?.price?.toString() ?? '')
+  const [currency, setCurrency] = useState(existing?.currency ?? 'EUR')
+  const [commission, setCommission] = useState(existing?.commission?.toString() ?? '0')
+  const [notes, setNotes]       = useState(existing?.notes ?? '')
+  const [saving, setSaving]     = useState(false)
+
+  // --- EUR rate hint ---
+  const [eurRate, setEurRate] = useState<number | null>(currency.toUpperCase() === 'EUR' ? 1 : null)
+
+  // Load markets once
   useEffect(() => {
-    assetsApi.list().then(setAssets).catch(() => {})
-    if (existing) {
-      const found = assets.find(a => a.id === existing.asset_id)
-      if (found) setSelectedAsset(found)
-    }
+    assetsApi.markets().then(setMarkets).catch(() => {})
   }, [])
 
+  // Pre-select asset when editing
   useEffect(() => {
-    if (assetSearch.length < 1) { setAssetResults([]); return }
-    assetsApi.search(assetSearch).then(setAssetResults)
-  }, [assetSearch])
+    if (!existing) return
+    assetsApi.search(existing.asset_ticker).then(results => {
+      const found = results.find(a => a.id === existing.asset_id)
+      if (found) setSelectedAsset(found)
+    }).catch(() => {})
+  }, [])
 
-  const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }))
+  // Search assets as user types
+  useEffect(() => {
+    if (assetQuery.length < 1) { setAssetResults([]); return }
+    if (selectedAsset) return  // don't search when an asset is already selected
+    assetsApi.search(assetQuery).then(setAssetResults).catch(() => {})
+  }, [assetQuery, selectedAsset])
+
+  // Fetch EUR rate whenever currency or date changes
+  useEffect(() => {
+    if (currency.toUpperCase() === 'EUR') { setEurRate(1); return }
+    if (currency.length !== 3) { setEurRate(null); return }
+    pricesApi.fxRate(currency, date)
+      .then(r => setEurRate(r.rate))
+      .catch(() => setEurRate(null))
+  }, [currency, date])
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setAssetResults([])
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
 
   const handleSelectAsset = (a: Asset) => {
     setSelectedAsset(a)
-    setAssetSearch(a.ticker)
+    setAssetQuery(a.ticker)
     setAssetResults([])
-    set('currency', a.currency)
+    setCurrency(a.currency)
+    setShowNewAsset(false)
+  }
+
+  const handleOpenNewAsset = () => {
+    setAssetResults([])
+    setNewAsset(d => ({ ...d, ticker: assetQuery.toUpperCase() }))
+    setShowNewAsset(true)
+  }
+
+  const handleMarketChange = (marketId: number | null) => {
+    setNewAsset(d => {
+      const mic = markets.find(m => m.id === marketId)?.mic ?? ''
+      return { ...d, market_id: marketId, currency: MARKET_CURRENCY[mic] ?? d.currency }
+    })
   }
 
   const handleCreateAsset = async () => {
+    if (!newAsset.ticker) { toast.error('El ticker es obligatorio'); return }
+    setCreatingAsset(true)
     try {
       const created = await assetsApi.create({
-        ...newAsset,
-        market_id: null,
+        name: newAsset.name || newAsset.ticker,
+        ticker: newAsset.ticker.toUpperCase(),
+        type: newAsset.type,
+        currency: newAsset.currency,
+        market_id: newAsset.market_id,
         image_url: null,
+        manual_price: newAsset.manual_price,
       })
-      setSelectedAsset(created)
-      setAssetSearch(created.ticker)
-      setAssetResults([])
-      set('currency', created.currency)
-      setShowNewAsset(false)
-      setAssets(prev => [...prev, created])
+      handleSelectAsset(created)
       toast.success(`Activo "${created.ticker}" creado`)
-    } catch {
-      toast.error('Error al crear el activo')
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      toast.error(msg || 'Error al crear el activo')
+    } finally {
+      setCreatingAsset(false)
     }
   }
 
   const handleSave = async () => {
     if (!selectedAsset) { toast.error('Selecciona un activo'); return }
-    if (!form.shares || !form.price || !form.price_eur) { toast.error('Rellena precio y participaciones'); return }
+    const sharesN = parseFloat(shares)
+    const priceN  = parseFloat(price)
+    if (!sharesN || !priceN) { toast.error('Participaciones y precio son obligatorios'); return }
 
     setSaving(true)
     const body: TransactionCreate = {
-      asset_id: selectedAsset.id,
-      type: form.type as 'buy' | 'sell',
-      broker: form.broker,
-      shares: Number(form.shares),
-      price: Number(form.price),
-      price_eur: Number(form.price_eur),
-      currency: form.currency,
-      commission: Number(form.commission) || 0,
-      commission_eur: Number(form.commission_eur) || 0,
-      date: form.date,
-      notes: form.notes || undefined,
+      asset_id:   selectedAsset.id,
+      type:       txType,
+      broker,
+      shares:     sharesN,
+      price:      priceN,
+      currency:   currency.toUpperCase(),
+      commission: parseFloat(commission) || 0,
+      date,
+      notes:      notes || undefined,
     }
 
     try {
@@ -108,264 +181,228 @@ export function TransactionForm({ existing, onClose, onSaved }: Props) {
       }
       onSaved()
       onClose()
-    } catch {
-      toast.error('Error al guardar')
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      toast.error(msg || 'Error al guardar')
     } finally {
       setSaving(false)
     }
   }
 
+  const priceEur      = eurRate != null && price      ? parseFloat(price) * eurRate      : null
+  const commissionEur = eurRate != null && commission ? parseFloat(commission) * eurRate : null
+  const eurHint = (v: number | null) =>
+    v != null && currency.toUpperCase() !== 'EUR'
+      ? <span className="text-xs text-gray-400 mt-0.5 block">≈ {v.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 4 })} €</span>
+      : null
+
+  const inputCls = "w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+  const labelCls = "block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1"
+
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white dark:bg-gray-800 rounded-xl w-full max-w-lg shadow-xl max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between p-5 border-b border-gray-200 dark:border-gray-700">
-          <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+      <div className="bg-white dark:bg-gray-800 rounded-xl w-full max-w-lg shadow-xl max-h-[92vh] flex flex-col">
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-700 shrink-0">
+          <h3 className="text-base font-semibold text-gray-900 dark:text-white">
             {existing ? 'Editar transacción' : 'Nueva transacción'}
           </h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
         </div>
 
-        <div className="p-5 space-y-4">
-          {/* Asset search */}
+        {/* Body */}
+        <div className="overflow-y-auto px-5 py-4 space-y-4">
+
+          {/* ── Asset ─────────────────────────────────── */}
           <div>
-            <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">Activo</label>
-            <div className="relative">
+            <label className={labelCls}>Activo</label>
+            <div className="relative" ref={dropdownRef}>
               <input
                 type="text"
-                value={assetSearch}
-                onChange={e => { setAssetSearch(e.target.value); setSelectedAsset(null) }}
-                placeholder="Buscar ticker o nombre..."
-                className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                value={assetQuery}
+                onChange={e => { setAssetQuery(e.target.value); setSelectedAsset(null); setShowNewAsset(false) }}
+                placeholder="Buscar por ticker o nombre…"
+                className={inputCls}
+                autoFocus={!existing}
               />
-              {assetResults.length > 0 && (
-                <ul className="absolute z-10 w-full mt-1 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg shadow-lg text-sm">
+              {/* Dropdown */}
+              {assetResults.length > 0 && !showNewAsset && (
+                <ul className="absolute z-20 w-full mt-1 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg shadow-lg text-sm max-h-48 overflow-y-auto">
                   {assetResults.map(a => (
-                    <li
-                      key={a.id}
-                      onClick={() => handleSelectAsset(a)}
-                      className="px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-600 cursor-pointer"
-                    >
-                      <span className="font-mono font-medium">{a.ticker}</span>
-                      <span className="text-gray-500 ml-2">{a.name}</span>
+                    <li key={a.id} onMouseDown={() => handleSelectAsset(a)}
+                      className="px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-600 cursor-pointer flex items-center gap-2">
+                      <span className="font-mono font-medium text-gray-900 dark:text-white">{a.ticker}</span>
+                      <span className="text-gray-500 truncate">{a.name}</span>
+                      <span className="ml-auto text-xs text-gray-400">{a.currency}</span>
                     </li>
                   ))}
-                  <li
-                    onClick={() => setShowNewAsset(true)}
-                    className="px-3 py-2 text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 cursor-pointer border-t border-gray-100 dark:border-gray-600"
-                  >
-                    + Crear nuevo activo "{assetSearch}"
+                  <li onMouseDown={handleOpenNewAsset}
+                    className="px-3 py-2 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 cursor-pointer border-t border-gray-100 dark:border-gray-600 font-medium">
+                    + Crear activo "{assetQuery}"
                   </li>
                 </ul>
+              )}
+              {assetQuery && assetResults.length === 0 && !selectedAsset && !showNewAsset && (
+                <div className="absolute z-20 w-full mt-1 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg shadow-lg text-sm">
+                  <div onMouseDown={handleOpenNewAsset}
+                    className="px-3 py-2.5 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 cursor-pointer font-medium">
+                    + Crear activo "{assetQuery}"
+                  </div>
+                </div>
               )}
             </div>
             {selectedAsset && (
               <p className="text-xs text-green-600 dark:text-green-400 mt-1">
-                ✓ {selectedAsset.name} ({selectedAsset.currency})
+                ✓ {selectedAsset.name} · {selectedAsset.type.toUpperCase()} · {selectedAsset.currency}
               </p>
             )}
           </div>
 
-          {/* New asset inline form */}
+          {/* ── New asset inline form ─────────────────── */}
           {showNewAsset && (
-            <div className="border border-blue-200 dark:border-blue-800 rounded-lg p-4 bg-blue-50 dark:bg-blue-900/20 space-y-3">
-              <p className="text-sm font-medium text-blue-700 dark:text-blue-300">Nuevo activo</p>
+            <div className="border border-blue-200 dark:border-blue-800 rounded-xl p-4 bg-blue-50/50 dark:bg-blue-900/20 space-y-3">
+              <p className="text-sm font-semibold text-blue-700 dark:text-blue-300">Nuevo activo</p>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs text-gray-500 mb-1">Ticker / ISIN</label>
-                  <input
-                    type="text"
-                    value={newAsset.ticker || assetSearch}
-                    onChange={e => setNewAsset(a => ({ ...a, ticker: e.target.value }))}
-                    className="w-full border border-gray-300 dark:border-gray-600 rounded px-2 py-1.5 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-                  />
+                  <label className={labelCls}>Ticker / ISIN</label>
+                  <input value={newAsset.ticker}
+                    onChange={e => setNewAsset(d => ({ ...d, ticker: e.target.value.toUpperCase() }))}
+                    className={inputCls} placeholder="AAPL · VWCE.DE · ES0170…" />
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-500 mb-1">Nombre</label>
-                  <input
-                    type="text"
-                    value={newAsset.name}
-                    onChange={e => setNewAsset(a => ({ ...a, name: e.target.value }))}
-                    className="w-full border border-gray-300 dark:border-gray-600 rounded px-2 py-1.5 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-                  />
+                  <label className={labelCls}>Nombre (opcional)</label>
+                  <input value={newAsset.name}
+                    onChange={e => setNewAsset(d => ({ ...d, name: e.target.value }))}
+                    className={inputCls} placeholder="Auto si es stock/ETF" />
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-500 mb-1">Tipo</label>
-                  <select
-                    value={newAsset.type}
-                    onChange={e => setNewAsset(a => ({ ...a, type: e.target.value as 'stock' | 'etf' | 'fund' }))}
-                    className="w-full border border-gray-300 dark:border-gray-600 rounded px-2 py-1.5 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-                  >
-                    <option value="stock">Stock</option>
-                    <option value="etf">ETF</option>
-                    <option value="fund">Fondo</option>
+                  <label className={labelCls}>Tipo</label>
+                  <select value={newAsset.type}
+                    onChange={e => setNewAsset(d => ({ ...d, type: e.target.value as NewAssetDraft['type'] }))}
+                    className={inputCls}>
+                    {ASSET_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-500 mb-1">Divisa</label>
-                  <input
-                    type="text"
-                    value={newAsset.currency}
-                    onChange={e => setNewAsset(a => ({ ...a, currency: e.target.value.toUpperCase() }))}
-                    className="w-full border border-gray-300 dark:border-gray-600 rounded px-2 py-1.5 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-                    maxLength={3}
-                  />
+                  <label className={labelCls}>Mercado</label>
+                  <select
+                    value={newAsset.market_id ?? ''}
+                    onChange={e => handleMarketChange(e.target.value ? Number(e.target.value) : null)}
+                    className={inputCls}>
+                    <option value="">Detectar por ticker</option>
+                    {markets.map(m => (
+                      <option key={m.id} value={m.id}>{m.name} ({m.country})</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className={labelCls}>Divisa</label>
+                  <input value={newAsset.currency}
+                    onChange={e => setNewAsset(d => ({ ...d, currency: e.target.value.toUpperCase() }))}
+                    className={inputCls} maxLength={3} placeholder="EUR" />
+                </div>
+                <div className="flex items-end pb-2">
+                  <label className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400 cursor-pointer">
+                    <input type="checkbox" checked={newAsset.manual_price}
+                      onChange={e => setNewAsset(d => ({ ...d, manual_price: e.target.checked }))}
+                      className="rounded" />
+                    Precio manual<br/><span className="text-gray-400">(fondo sin cobertura auto)</span>
+                  </label>
                 </div>
               </div>
-              <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
-                <input
-                  type="checkbox"
-                  checked={newAsset.manual_price}
-                  onChange={e => setNewAsset(a => ({ ...a, manual_price: e.target.checked }))}
-                />
-                Precio manual (Fondo sin precio automático)
-              </label>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setShowNewAsset(false)}
-                  className="flex-1 px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded text-gray-600 dark:text-gray-400 hover:bg-gray-50"
-                >
+              <div className="flex gap-2 pt-1">
+                <button onClick={() => setShowNewAsset(false)}
+                  className="flex-1 px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">
                   Cancelar
                 </button>
-                <button
-                  onClick={handleCreateAsset}
-                  className="flex-1 px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
-                >
-                  Crear activo
+                <button onClick={handleCreateAsset} disabled={creatingAsset || !newAsset.ticker}
+                  className="flex-1 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
+                  {creatingAsset ? 'Creando…' : 'Crear activo'}
                 </button>
               </div>
             </div>
           )}
 
-          {/* Type + Broker */}
-          <div className="grid grid-cols-2 gap-4">
+          {/* ── Buy / Sell ────────────────────────────── */}
+          <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">Operación</label>
+              <label className={labelCls}>Operación</label>
               <div className="flex rounded-lg border border-gray-300 dark:border-gray-600 overflow-hidden">
                 {(['buy', 'sell'] as const).map(t => (
-                  <button
-                    key={t}
-                    onClick={() => set('type', t)}
+                  <button key={t} type="button" onClick={() => setTxType(t)}
                     className={`flex-1 py-2 text-sm font-medium transition-colors ${
-                      form.type === t
-                        ? t === 'buy'
-                          ? 'bg-green-500 text-white'
-                          : 'bg-red-500 text-white'
-                        : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'
-                    }`}
-                  >
+                      txType === t
+                        ? t === 'buy' ? 'bg-green-500 text-white' : 'bg-red-500 text-white'
+                        : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'
+                    }`}>
                     {t === 'buy' ? 'Compra' : 'Venta'}
                   </button>
                 ))}
               </div>
             </div>
             <div>
-              <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">Broker</label>
-              <select
-                value={form.broker}
-                onChange={e => set('broker', e.target.value)}
-                className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-              >
+              <label className={labelCls}>Broker</label>
+              <select value={broker} onChange={e => setBroker(e.target.value)} className={inputCls}>
                 {BROKERS.map(b => <option key={b.value} value={b.value}>{b.label}</option>)}
               </select>
             </div>
           </div>
 
-          {/* Shares + Date */}
-          <div className="grid grid-cols-2 gap-4">
+          {/* ── Shares + Date ─────────────────────────── */}
+          <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">Participaciones</label>
-              <input
-                type="number" step="0.0001" min="0"
-                value={form.shares}
-                onChange={e => set('shares', e.target.value)}
-                className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-              />
+              <label className={labelCls}>Participaciones</label>
+              <input type="number" step="any" min="0" value={shares}
+                onChange={e => setShares(e.target.value)} className={inputCls} placeholder="0" />
             </div>
             <div>
-              <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">Fecha</label>
-              <input
-                type="date"
-                value={form.date}
-                max={today}
-                onChange={e => set('date', e.target.value)}
-                className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-              />
+              <label className={labelCls}>Fecha</label>
+              <input type="date" value={date} max={today}
+                onChange={e => setDate(e.target.value)} className={inputCls} />
             </div>
           </div>
 
-          {/* Price fields */}
-          <div className="grid grid-cols-2 gap-4">
+          {/* ── Price ─────────────────────────────────── */}
+          <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">
-                Precio ({form.currency})
-              </label>
-              <input
-                type="number" step="0.0001" min="0"
-                value={form.price}
-                onChange={e => set('price', e.target.value)}
-                className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-              />
+              <label className={labelCls}>Precio / participación</label>
+              <div className="flex gap-1">
+                <input type="number" step="any" min="0" value={price}
+                  onChange={e => setPrice(e.target.value)} className={`${inputCls} flex-1`} placeholder="0.00" />
+                <input value={currency} onChange={e => setCurrency(e.target.value.toUpperCase())}
+                  className={`${inputCls} w-16 text-center font-mono`} maxLength={3} title="Divisa" />
+              </div>
+              {eurHint(priceEur)}
+              {eurRate == null && currency.toUpperCase() !== 'EUR' && (
+                <span className="text-xs text-amber-500 mt-0.5 block">Sin tasa FX — actualiza precios para conversión exacta</span>
+              )}
             </div>
             <div>
-              <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">Precio (€)</label>
-              <input
-                type="number" step="0.0001" min="0"
-                value={form.price_eur}
-                onChange={e => set('price_eur', e.target.value)}
-                className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-              />
-            </div>
-          </div>
-
-          {/* Commission */}
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">
-                Comisión ({form.currency})
-              </label>
-              <input
-                type="number" step="0.01" min="0"
-                value={form.commission}
-                onChange={e => set('commission', e.target.value)}
-                className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-              />
-            </div>
-            <div>
-              <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">Comisión (€)</label>
-              <input
-                type="number" step="0.01" min="0"
-                value={form.commission_eur}
-                onChange={e => set('commission_eur', e.target.value)}
-                className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-              />
+              <label className={labelCls}>Comisión (opcional)</label>
+              <input type="number" step="any" min="0" value={commission}
+                onChange={e => setCommission(e.target.value)} className={inputCls} placeholder="0.00" />
+              {eurHint(commissionEur)}
             </div>
           </div>
 
-          {/* Notes */}
+          {/* ── Notes ─────────────────────────────────── */}
           <div>
-            <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">Notas (opcional)</label>
-            <input
-              type="text"
-              value={form.notes}
-              onChange={e => set('notes', e.target.value)}
-              className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-            />
+            <label className={labelCls}>Notas (opcional)</label>
+            <input type="text" value={notes} onChange={e => setNotes(e.target.value)}
+              className={inputCls} placeholder="Ej: DCA mensual" />
           </div>
         </div>
 
-        <div className="flex gap-3 p-5 border-t border-gray-200 dark:border-gray-700">
-          <button
-            onClick={onClose}
-            className="flex-1 px-4 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
-          >
+        {/* Footer */}
+        <div className="flex gap-3 px-5 py-4 border-t border-gray-200 dark:border-gray-700 shrink-0">
+          <button onClick={onClose}
+            className="flex-1 px-4 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">
             Cancelar
           </button>
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="flex-1 px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
-          >
-            {saving ? 'Guardando...' : existing ? 'Actualizar' : 'Registrar'}
+          <button onClick={handleSave} disabled={saving || !selectedAsset}
+            className="flex-1 px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
+            {saving ? 'Guardando…' : existing ? 'Actualizar' : 'Registrar'}
           </button>
         </div>
       </div>

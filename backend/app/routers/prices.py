@@ -26,6 +26,21 @@ def refresh_prices(background_tasks: BackgroundTasks):
     return {"ok": True, "message": "Price refresh started"}
 
 
+@router.get("/fx-rate")
+def fx_rate(currency: str, date: str):
+    """Return the EUR rate for a currency on a given date (for form hints)."""
+    from app.services.currency import get_rate_to_eur
+    from dateutil.parser import parse as parse_date
+    conn = get_db()
+    if currency.upper() == "EUR":
+        return {"rate": 1.0, "found": True}
+    try:
+        rate = get_rate_to_eur(conn, currency.upper(), parse_date(date).date())
+        return {"rate": rate, "found": True}
+    except ValueError:
+        return {"rate": None, "found": False}
+
+
 @router.post("/refresh/{asset_id}")
 def refresh_single(asset_id: int, background_tasks: BackgroundTasks):
     conn = get_db()

@@ -45,12 +45,17 @@ export interface TransactionCreate {
   broker: string
   shares: number
   price: number
-  price_eur: number
   currency: string
   commission: number
-  commission_eur: number
   date: string
   notes?: string
+}
+
+export interface Market {
+  id: number
+  mic: string
+  name: string
+  country: string
 }
 
 export interface HoldingRow {
@@ -108,6 +113,7 @@ export const assetsApi = {
   create: (body: Omit<Asset, 'id' | 'created_at'>) => api.post<Asset>('/assets', body).then(r => r.data),
   setManualPrice: (id: number, price: number, date: string, currency: string) =>
     api.put(`/assets/${id}/price`, null, { params: { price, price_date: date, currency } }).then(r => r.data),
+  markets: () => api.get<Market[]>('/assets/markets').then(r => r.data),
 }
 
 export const transactionsApi = {
@@ -131,6 +137,8 @@ export const pricesApi = {
   status: () => api.get<PriceStatus>('/prices/status').then(r => r.data),
   refresh: () => api.post('/prices/refresh').then(r => r.data),
   refreshAsset: (id: number) => api.post(`/prices/refresh/${id}`).then(r => r.data),
+  fxRate: (currency: string, date: string) =>
+    api.get<{ rate: number | null; found: boolean }>(`/prices/fx-rate?currency=${currency}&date=${date}`).then(r => r.data),
 }
 
 export interface ParsedTransaction {
