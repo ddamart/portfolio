@@ -23,34 +23,54 @@ Personal investment portfolio tracker supporting stocks, ETFs, and Spanish mutua
 
 ## Setup
 
-### Backend
+### 1. Install dependencies
 
+**Backend** (Python 3.10+):
 ```bash
 cd backend
 python -m venv .venv
 
 # Windows
-.venv\Scripts\activate
-# macOS/Linux
-source .venv/bin/activate
+.venv\Scripts\pip install -r requirements.txt
+# macOS / Linux
+.venv/bin/pip install -r requirements.txt
 
-pip install -r requirements.txt
 cp .env.example .env
-uvicorn app.main:app --reload
 ```
 
-API runs on http://localhost:8000  
-API docs at http://localhost:8000/docs
-
-### Frontend
-
+**Frontend**:
 ```bash
 cd frontend
 npm install
-npm run dev
 ```
 
-App runs on http://localhost:5173
+### 2. Start
+
+**Windows** — opens two separate PowerShell terminals:
+```powershell
+.\start.ps1
+```
+
+**macOS / Linux** — runs both in one terminal (Ctrl+C stops both):
+```bash
+chmod +x start.sh
+./start.sh
+```
+
+**Manually** (any platform):
+```bash
+# Terminal 1 — backend
+cd backend && .venv/Scripts/uvicorn app.main:app --reload   # Windows
+cd backend && .venv/bin/uvicorn app.main:app --reload       # macOS/Linux
+
+# Terminal 2 — frontend
+cd frontend && npm run dev
+```
+
+| URL | Description |
+|-----|-------------|
+| http://localhost:5173 | Web app |
+| http://localhost:8000/docs | API docs (Swagger UI) |
 
 ## Project Structure
 
