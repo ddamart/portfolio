@@ -7,10 +7,14 @@ class Settings(BaseSettings):
     database_path: str = "data/portfolio.duckdb"
     debug: bool = False
     log_level: str = "INFO"
-    # Minutes before prices are considered stale while market is open
     price_refresh_ttl_open: int = 15
-    # Minutes before prices are considered stale while market is closed (24h default)
     price_refresh_ttl_closed: int = 1440
+
+    # LLM-powered import
+    llm_provider: str = "gemini"          # "gemini" | "anthropic"
+    gemini_api_key: str = ""
+    anthropic_api_key: str = ""
+    llm_model: str = ""                   # blank → provider default
 
 
 settings = Settings()

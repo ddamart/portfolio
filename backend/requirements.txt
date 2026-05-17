@@ -10,3 +10,5 @@ mstarpy>=10.0.0
 httpx
 pytz
 python-dateutil
+google-genai
+anthropic

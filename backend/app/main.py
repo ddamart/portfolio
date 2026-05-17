@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import close_db, init_db
 from app.routers import assets, portfolio, prices, transactions
+from app.routers import import_router
 
 logging.basicConfig(level=settings.log_level)
 
@@ -36,6 +37,7 @@ app.include_router(assets.router)
 app.include_router(transactions.router)
 app.include_router(portfolio.router)
 app.include_router(prices.router)
+app.include_router(import_router.router)
 
 
 @app.get("/health")

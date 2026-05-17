@@ -132,3 +132,27 @@ export const pricesApi = {
   refresh: () => api.post('/prices/refresh').then(r => r.data),
   refreshAsset: (id: number) => api.post(`/prices/refresh/${id}`).then(r => r.data),
 }
+
+export interface ParsedTransaction {
+  ticker: string
+  asset_name: string | null
+  asset_type: 'stock' | 'etf' | 'fund'
+  transaction_type: 'buy' | 'sell'
+  date: string
+  shares: number
+  price: number
+  currency: string
+  commission: number
+  broker: string
+  notes: string | null
+  asset_id: number | null
+  price_eur: number | null
+  commission_eur: number | null
+}
+
+export const importApi = {
+  parse: (raw_text: string, broker_hint?: string) =>
+    api.post<{ transactions: ParsedTransaction[] }>('/import/parse', { raw_text, broker_hint }).then(r => r.data),
+  confirm: (transactions: ParsedTransaction[]) =>
+    api.post<{ imported: number; errors: string[] }>('/import/confirm', { transactions }).then(r => r.data),
+}
