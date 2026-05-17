@@ -7,10 +7,15 @@ BACKEND_PORT=${BACKEND_PORT:-8000}
 FRONTEND_PORT=${FRONTEND_PORT:-5173}
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 
-PYTHON="$ROOT/backend/.venv/bin/python"
-if [ ! -f "$PYTHON" ]; then
+# Support both Unix (.venv/bin/python) and Windows (.venv/Scripts/python.exe)
+if [ -f "$ROOT/backend/.venv/Scripts/python.exe" ]; then
+  PYTHON="$ROOT/backend/.venv/Scripts/python.exe"
+elif [ -f "$ROOT/backend/.venv/bin/python" ]; then
+  PYTHON="$ROOT/backend/.venv/bin/python"
+else
   echo "Error: Python venv not found at backend/.venv"
-  echo "Run: cd backend && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"
+  echo "  Windows: cd backend && python -m venv .venv && .venv\\Scripts\\pip install -r requirements.txt"
+  echo "  Unix:    cd backend && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"
   exit 1
 fi
 
