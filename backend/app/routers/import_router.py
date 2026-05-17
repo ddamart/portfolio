@@ -52,19 +52,44 @@ def parse_import(body: ParseRequest):
 
 @router.post("/confirm", response_model=ConfirmResponse)
 def confirm_import(body: ConfirmRequest, background_tasks: BackgroundTasks):
-    """Commit the user-reviewed transactions to the database."""
+    """Validate the full batch, then commit atomically (all or nothing)."""
     conn = get_db()
+
+    # --- Phase 1: validate sell balances before writing anything ---
+    sell_errors = _validate_sell_balances(conn, body.transactions)
+    if sell_errors:
+        raise HTTPException(
+            status_code=422,
+            detail="Ventas inválidas en el lote:\n" + "\n".join(sell_errors),
+        )
+
+    # --- Phase 2: commit atomically ---
     imported = 0
     errors: list[str] = []
 
-    for txn in body.transactions:
-        label = f"{txn.ticker} {txn.date}"
-        try:
-            _ensure_asset(conn, txn)
-            _insert_transaction(conn, txn)
-            imported += 1
-        except Exception as exc:
-            errors.append(f"{label}: {exc}")
+    conn.execute("BEGIN")
+    try:
+        for txn in body.transactions:
+            label = f"{txn.ticker} {txn.date}"
+            try:
+                _ensure_asset(conn, txn)
+                _insert_transaction(conn, txn)
+                imported += 1
+            except Exception as exc:
+                errors.append(f"{label}: {exc}")
+
+        if errors:
+            conn.execute("ROLLBACK")
+            raise HTTPException(
+                status_code=422,
+                detail="Errores al insertar transacciones:\n" + "\n".join(errors),
+            )
+        conn.execute("COMMIT")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        conn.execute("ROLLBACK")
+        raise HTTPException(status_code=500, detail=f"Error inesperado: {exc}")
 
     if imported > 0:
         background_tasks.add_task(_bg_refresh)
@@ -176,6 +201,48 @@ def _insert_transaction(conn, txn: ParsedTransaction) -> None:
             txn.commission, commission_eur, d, txn.notes,
         ],
     )
+
+
+def _validate_sell_balances(conn, transactions: list[ParsedTransaction]) -> list[str]:
+    """
+    Simulate the batch in chronological order against existing DB balances.
+    Returns a list of error strings — empty means the batch is valid.
+    """
+    # Sort by date so earlier buys can cover later sells within the same batch
+    sorted_txns = sorted(transactions, key=lambda t: t.date)
+
+    # Pre-load current holdings for every ticker referenced in the batch
+    balances: dict[str, float] = {}
+    for txn in sorted_txns:
+        key = txn.ticker.upper()
+        if key not in balances:
+            row = conn.execute(
+                """
+                SELECT COALESCE(SUM(CASE WHEN t.type='buy' THEN t.shares ELSE -t.shares END), 0)
+                FROM transactions t
+                JOIN assets a ON a.id = t.asset_id
+                WHERE UPPER(a.ticker) = ?
+                """,
+                [key],
+            ).fetchone()
+            balances[key] = float(row[0])
+
+    errors: list[str] = []
+    for txn in sorted_txns:
+        key = txn.ticker.upper()
+        if txn.transaction_type == "buy":
+            balances[key] = balances.get(key, 0.0) + txn.shares
+        else:
+            current = balances.get(key, 0.0)
+            if txn.shares > current + 1e-9:
+                errors.append(
+                    f"{txn.ticker} {txn.date}: venta de {txn.shares:g} participaciones "
+                    f"pero el saldo simulado en esa fecha sería {current:g}"
+                )
+            else:
+                balances[key] = current - txn.shares
+
+    return errors
 
 
 def _bg_refresh() -> None:

@@ -93,12 +93,28 @@ def get_transaction(tx_id: int):
     return _row_to_out(row)
 
 
+def _current_balance(conn, asset_id: int) -> float:
+    row = conn.execute(
+        "SELECT COALESCE(SUM(CASE WHEN type='buy' THEN shares ELSE -shares END), 0) FROM transactions WHERE asset_id = ?",
+        [asset_id],
+    ).fetchone()
+    return float(row[0])
+
+
 @router.post("", response_model=TransactionOut, status_code=201)
 def create_transaction(body: TransactionCreate):
     conn = get_db()
     asset = conn.execute("SELECT id FROM assets WHERE id = ?", [body.asset_id]).fetchone()
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
+
+    if body.type == "sell":
+        current = _current_balance(conn, body.asset_id)
+        if body.shares > current + 1e-9:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Saldo insuficiente: tienes {current:g} participaciones, intentas vender {body.shares:g}",
+            )
 
     conn.execute(
         """

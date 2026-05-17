@@ -56,8 +56,15 @@ export function ImportPage() {
         toast.error(`${data.errors.length} error(es) — ver detalle abajo`)
       }
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      toast.error(msg || 'Error al importar')
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      if (detail) {
+        // Show first line in toast, full detail in result panel
+        const firstLine = detail.split('\n')[0]
+        toast.error(firstLine)
+        setResult({ imported: 0, errors: detail.split('\n').filter(Boolean) })
+      } else {
+        toast.error('Error al importar')
+      }
     } finally {
       setConfirming(false)
     }
