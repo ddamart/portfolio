@@ -5,9 +5,13 @@ Strategy per asset type:
   - stocks / ETFs  → yfinance (batch download)
   - funds (ISIN)   → investpy (primary) → mstarpy (fallback) → manual
   - FX rates       → yfinance (EURUSD=X, EURGBP=X, ...)
+
+Fetch range logic:
+  - Asset with no prices in DB → backfill from oldest transaction date (or 2y ago)
+  - Asset with existing prices → last 5 trading days only
 """
 import logging
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta
 from typing import Optional
 
 import duckdb
@@ -15,13 +19,18 @@ import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
-# Refreshing flag (in-process; good enough for single-worker PoC)
 _refreshing: bool = False
+_REFRESH_DAYS = 5          # days to fetch on a normal (non-backfill) refresh
+_BACKFILL_FALLBACK_DAYS = 365 * 2  # used when no transactions exist yet
 
 
 def is_refreshing() -> bool:
     return _refreshing
 
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 def refresh_all_prices(conn: duckdb.DuckDBPyConnection) -> int:
     """Refresh prices for all active holdings. Returns number of price rows upserted."""
@@ -30,7 +39,6 @@ def refresh_all_prices(conn: duckdb.DuckDBPyConnection) -> int:
     log_id = _start_refresh_log(conn)
     updated = 0
     try:
-        # Get active holdings (total_shares > 0) with their asset info
         holdings = conn.execute("""
             SELECT a.id, a.ticker, a.type, a.currency, a.manual_price
             FROM assets a
@@ -45,23 +53,26 @@ def refresh_all_prices(conn: duckdb.DuckDBPyConnection) -> int:
         if not holdings:
             return 0
 
-        # Separate by type
-        yf_assets = [(id_, ticker, currency) for id_, ticker, type_, currency, _ in holdings if type_ != "fund"]
-        fund_assets = [(id_, ticker, currency) for id_, ticker, type_, currency, _ in holdings if type_ == "fund"]
+        yf_assets  = [(id_, t, c) for id_, t, tp, c, _ in holdings if tp != "fund"]
+        fund_assets = [(id_, t, c) for id_, t, tp, c, _ in holdings if tp == "fund"]
 
-        # Refresh FX rates first (needed for price_eur calculation)
-        currencies = set(currency for _, _, currency in yf_assets + fund_assets) - {"EUR"}
+        # Determine fetch ranges per asset
+        yf_ranges  = {id_: _get_fetch_range(conn, id_) for id_, _, _ in yf_assets}
+        fund_ranges = {id_: _get_fetch_range(conn, id_) for id_, _, _ in fund_assets}
+
+        # Fetch FX rates covering the full backfill window first
+        currencies = set(c for _, _, c in yf_assets + fund_assets) - {"EUR"}
         if currencies:
-            updated += _fetch_fx_rates(conn, list(currencies))
+            all_starts = [s for s, _ in list(yf_ranges.values()) + list(fund_ranges.values())]
+            fx_start = min(all_starts) if all_starts else date.today() - timedelta(days=_REFRESH_DAYS)
+            updated += _fetch_fx_rates(conn, list(currencies), fx_start)
 
-        # Batch-fetch stocks/ETFs
         if yf_assets:
-            updated += _fetch_yfinance_prices(conn, yf_assets)
+            updated += _fetch_yfinance_prices_ranged(conn, yf_assets, yf_ranges)
 
-        # Fetch funds
         for asset_id, ticker, currency in fund_assets:
-            count = _fetch_fund_price(conn, asset_id, ticker, currency)
-            updated += count
+            start, end = fund_ranges[asset_id]
+            updated += _fetch_fund_price(conn, asset_id, ticker, currency, start, end)
 
         _finish_refresh_log(conn, log_id, updated, "ok")
     except Exception as e:
@@ -85,17 +96,24 @@ def refresh_single_asset(conn: duckdb.DuckDBPyConnection, asset_id: int) -> int:
     if manual_price:
         return 0
 
+    start, end = _get_fetch_range(conn, id_)
+
     currencies = {currency} - {"EUR"}
     if currencies:
-        _fetch_fx_rates(conn, list(currencies))
+        _fetch_fx_rates(conn, list(currencies), start)
 
     if type_ == "fund":
-        return _fetch_fund_price(conn, id_, ticker, currency)
-    return _fetch_yfinance_prices(conn, [(id_, ticker, currency)])
+        return _fetch_fund_price(conn, id_, ticker, currency, start, end)
+
+    return _fetch_yfinance_prices_ranged(
+        conn,
+        [(id_, ticker, currency)],
+        {id_: (start, end)},
+    )
 
 
 def fetch_asset_metadata(ticker: str) -> dict:
-    """Try to fetch name, currency, logo_url and market hint from yfinance."""
+    """Try to fetch name, currency, and logo_url from yfinance."""
     try:
         info = yf.Ticker(ticker).info
         return {
@@ -107,9 +125,67 @@ def fetch_asset_metadata(ticker: str) -> dict:
         return {"name": ticker, "currency": "EUR", "image_url": None}
 
 
-def _fetch_yfinance_prices(
+# ---------------------------------------------------------------------------
+# Fetch-range helpers
+# ---------------------------------------------------------------------------
+
+def _get_fetch_range(conn: duckdb.DuckDBPyConnection, asset_id: int) -> tuple[date, date]:
+    """
+    Return (start, end) for a price fetch.
+    - No existing prices → start from oldest transaction date (backfill).
+    - Prices exist       → last N trading days only.
+    """
+    today = date.today()
+    has_prices = conn.execute(
+        "SELECT COUNT(*) FROM prices WHERE asset_id = ?", [asset_id]
+    ).fetchone()[0]
+
+    if has_prices > 0:
+        return today - timedelta(days=_REFRESH_DAYS), today
+
+    # Backfill: go back to the oldest transaction for this asset
+    row = conn.execute(
+        "SELECT MIN(date) FROM transactions WHERE asset_id = ?", [asset_id]
+    ).fetchone()
+    if row and row[0]:
+        oldest = row[0] if isinstance(row[0], date) else row[0].date()
+        # Give a small buffer before the first transaction
+        return oldest - timedelta(days=5), today
+
+    # Asset exists but no transactions yet — fetch 2 years as a sensible default
+    return today - timedelta(days=_BACKFILL_FALLBACK_DAYS), today
+
+
+# ---------------------------------------------------------------------------
+# yfinance (stocks / ETFs)
+# ---------------------------------------------------------------------------
+
+def _fetch_yfinance_prices_ranged(
+    conn: duckdb.DuckDBPyConnection,
+    assets: list[tuple[int, str, str]],   # (asset_id, ticker, currency)
+    ranges: dict[int, tuple[date, date]], # asset_id → (start, end)
+) -> int:
+    """
+    Batch assets that share the same date range; fetch each batch together.
+    Backfill assets (typically one at a time) are fetched individually.
+    """
+    # Group by (start, end)
+    from collections import defaultdict
+    groups: dict[tuple[date, date], list[tuple[int, str, str]]] = defaultdict(list)
+    for asset_id, ticker, currency in assets:
+        groups[ranges[asset_id]].append((asset_id, ticker, currency))
+
+    total = 0
+    for (start, end), group in groups.items():
+        total += _fetch_yfinance_batch(conn, group, start, end)
+    return total
+
+
+def _fetch_yfinance_batch(
     conn: duckdb.DuckDBPyConnection,
     assets: list[tuple[int, str, str]],
+    start: date,
+    end: date,
 ) -> int:
     tickers = [ticker for _, ticker, _ in assets]
     ticker_to_id_ccy = {ticker: (id_, ccy) for id_, ticker, ccy in assets}
@@ -117,13 +193,14 @@ def _fetch_yfinance_prices(
     try:
         data = yf.download(
             tickers=tickers,
-            period="5d",
+            start=start.isoformat(),
+            end=(end + timedelta(days=1)).isoformat(),  # yfinance end is exclusive
             auto_adjust=True,
             progress=False,
             group_by="ticker",
         )
     except Exception as e:
-        logger.error("yfinance batch download failed: %s", e)
+        logger.error("yfinance batch download failed (%s → %s): %s", start, end, e)
         return 0
 
     count = 0
@@ -132,14 +209,9 @@ def _fetch_yfinance_prices(
     for ticker in tickers:
         asset_id, currency = ticker_to_id_ccy[ticker]
         try:
-            if len(tickers) == 1:
-                ticker_data = data
-            else:
-                ticker_data = data[ticker]
-
+            ticker_data = data if len(tickers) == 1 else data[ticker]
             if ticker_data.empty:
                 continue
-
             for idx_date, row in ticker_data.iterrows():
                 price_date = idx_date.date() if hasattr(idx_date, "date") else idx_date
                 if price_date > today:
@@ -156,32 +228,35 @@ def _fetch_yfinance_prices(
     return count
 
 
+# ---------------------------------------------------------------------------
+# Funds (investpy → mstarpy → give up)
+# ---------------------------------------------------------------------------
+
 def _fetch_fund_price(
     conn: duckdb.DuckDBPyConnection,
     asset_id: int,
     ticker: str,
     currency: str,
+    start: date,
+    end: date,
 ) -> int:
-    """Try investpy, then mstarpy, return number of rows upserted."""
-    count = _try_investpy(conn, asset_id, ticker, currency)
+    count = _try_investpy(conn, asset_id, ticker, currency, start, end)
     if count > 0:
         return count
-    count = _try_mstarpy(conn, asset_id, ticker, currency)
-    return count
+    return _try_mstarpy(conn, asset_id, ticker, currency, start, end)
 
 
-def _try_investpy(conn, asset_id, ticker, currency) -> int:
+def _try_investpy(conn, asset_id, ticker, currency, start: date, end: date) -> int:
     try:
         import investpy
-        from_date = (date.today() - timedelta(days=10)).strftime("%d/%m/%Y")
-        to_date = date.today().strftime("%d/%m/%Y")
+        from_str = start.strftime("%d/%m/%Y")
+        to_str   = end.strftime("%d/%m/%Y")
 
-        # Try to search fund by ISIN
         search_results = investpy.search_quotes(text=ticker, products=["funds"], n_results=1)
         if not search_results:
             return 0
         fund = search_results[0]
-        hist = fund.retrieve_historical_data(from_date=from_date, to_date=to_date)
+        hist = fund.retrieve_historical_data(from_date=from_str, to_date=to_str)
         if hist is None or hist.empty:
             return 0
 
@@ -200,11 +275,11 @@ def _try_investpy(conn, asset_id, ticker, currency) -> int:
         return 0
 
 
-def _try_mstarpy(conn, asset_id, ticker, currency) -> int:
+def _try_mstarpy(conn, asset_id, ticker, currency, start: date, end: date) -> int:
     try:
         import mstarpy
         fund = mstarpy.Fund(term=ticker, country="esp")
-        hist = fund.nav(start_date=date.today() - timedelta(days=10), end_date=date.today())
+        hist = fund.nav(start_date=start, end_date=end)
         if not hist:
             return 0
 
@@ -226,12 +301,23 @@ def _try_mstarpy(conn, asset_id, ticker, currency) -> int:
         return 0
 
 
-def _fetch_fx_rates(conn: duckdb.DuckDBPyConnection, currencies: list[str]) -> int:
+# ---------------------------------------------------------------------------
+# FX rates
+# ---------------------------------------------------------------------------
+
+def _fetch_fx_rates(
+    conn: duckdb.DuckDBPyConnection,
+    currencies: list[str],
+    start: date,
+) -> int:
     pairs = [f"EUR{ccy}=X" for ccy in currencies]
+    today = date.today()
+
     try:
         data = yf.download(
             tickers=pairs,
-            period="5d",
+            start=start.isoformat(),
+            end=(today + timedelta(days=1)).isoformat(),
             auto_adjust=True,
             progress=False,
             group_by="ticker",
@@ -241,14 +327,9 @@ def _fetch_fx_rates(conn: duckdb.DuckDBPyConnection, currencies: list[str]) -> i
         return 0
 
     count = 0
-    today = date.today()
-
     for pair, ccy in zip(pairs, currencies):
         try:
-            if len(pairs) == 1:
-                pair_data = data
-            else:
-                pair_data = data[pair]
+            pair_data = data if len(pairs) == 1 else data[pair]
             if pair_data.empty:
                 continue
             for idx_date, row in pair_data.iterrows():
@@ -258,19 +339,12 @@ def _fetch_fx_rates(conn: duckdb.DuckDBPyConnection, currencies: list[str]) -> i
                 eur_rate = float(row["Close"])
                 if eur_rate <= 0:
                     continue
-                # Store both directions
                 conn.execute(
-                    """
-                    INSERT INTO fx_rates VALUES (?, ?, ?, ?)
-                    ON CONFLICT (date, from_ccy, to_ccy) DO UPDATE SET rate = excluded.rate
-                    """,
+                    "INSERT INTO fx_rates VALUES (?, ?, ?, ?) ON CONFLICT (date, from_ccy, to_ccy) DO UPDATE SET rate = excluded.rate",
                     [rate_date, "EUR", ccy, eur_rate],
                 )
                 conn.execute(
-                    """
-                    INSERT INTO fx_rates VALUES (?, ?, ?, ?)
-                    ON CONFLICT (date, from_ccy, to_ccy) DO UPDATE SET rate = excluded.rate
-                    """,
+                    "INSERT INTO fx_rates VALUES (?, ?, ?, ?) ON CONFLICT (date, from_ccy, to_ccy) DO UPDATE SET rate = excluded.rate",
                     [rate_date, ccy, "EUR", 1.0 / eur_rate],
                 )
                 count += 1
@@ -280,35 +354,21 @@ def _fetch_fx_rates(conn: duckdb.DuckDBPyConnection, currencies: list[str]) -> i
     return count
 
 
-def _price_to_eur(
-    conn: duckdb.DuckDBPyConnection,
-    price: float,
-    currency: str,
-    on_date: date,
-) -> float:
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+def _price_to_eur(conn, price: float, currency: str, on_date: date) -> float:
     if currency.upper() == "EUR":
         return price
     row = conn.execute(
-        """
-        SELECT rate FROM fx_rates
-        WHERE from_ccy = ? AND to_ccy = 'EUR' AND date <= ?
-        ORDER BY date DESC LIMIT 1
-        """,
+        "SELECT rate FROM fx_rates WHERE from_ccy = ? AND to_ccy = 'EUR' AND date <= ? ORDER BY date DESC LIMIT 1",
         [currency.upper(), on_date],
     ).fetchone()
-    if row is None:
-        return price  # best-effort fallback: treat as EUR
-    return price * float(row[0])
+    return price * float(row[0]) if row else price
 
 
-def _upsert_price(
-    conn: duckdb.DuckDBPyConnection,
-    asset_id: int,
-    price_date: date,
-    price: float,
-    currency: str,
-    price_eur: float,
-) -> None:
+def _upsert_price(conn, asset_id: int, price_date: date, price: float, currency: str, price_eur: float) -> None:
     conn.execute(
         """
         INSERT INTO prices VALUES (?, ?, ?, ?, ?)
@@ -321,7 +381,7 @@ def _upsert_price(
     )
 
 
-def _start_refresh_log(conn: duckdb.DuckDBPyConnection) -> int:
+def _start_refresh_log(conn) -> int:
     row = conn.execute(
         "INSERT INTO refresh_log VALUES (nextval('refresh_log_id_seq'), current_timestamp, NULL, NULL, 'running') RETURNING id"
     ).fetchone()
