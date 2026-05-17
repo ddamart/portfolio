@@ -1,0 +1,142 @@
+import os
+import duckdb
+
+_conn: duckdb.DuckDBPyConnection | None = None
+
+MARKETS_SEED = [
+    # (mic, name, timezone, open_time, close_time, country)
+    ("XETR", "Xetra (Frankfurt)", "Europe/Berlin", "09:00", "17:30", "DE"),
+    ("XAMS", "Euronext Amsterdam", "Europe/Amsterdam", "09:00", "17:30", "NL"),
+    ("XMAD", "Bolsa de Madrid", "Europe/Madrid", "09:00", "17:35", "ES"),
+    ("XLON", "London Stock Exchange", "Europe/London", "08:00", "16:30", "GB"),
+    ("XNYS", "New York Stock Exchange", "America/New_York", "09:30", "16:00", "US"),
+    ("XNAS", "NASDAQ", "America/New_York", "09:30", "16:00", "US"),
+    ("CNMV", "CNMV Fondos (Spain)", "Europe/Madrid", "00:00", "18:00", "ES"),
+]
+
+
+def get_db() -> duckdb.DuckDBPyConnection:
+    if _conn is None:
+        raise RuntimeError("Database not initialized. Call init_db() first.")
+    return _conn
+
+
+def init_db(path: str) -> None:
+    global _conn
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    _conn = duckdb.connect(path)
+    _apply_schema(_conn)
+    _seed_markets(_conn)
+
+
+def close_db() -> None:
+    global _conn
+    if _conn is not None:
+        _conn.close()
+        _conn = None
+
+
+def _apply_schema(conn: duckdb.DuckDBPyConnection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS markets (
+            id         INTEGER PRIMARY KEY,
+            mic        VARCHAR(6) NOT NULL UNIQUE,
+            name       VARCHAR NOT NULL,
+            timezone   VARCHAR NOT NULL,
+            open_time  TIME NOT NULL,
+            close_time TIME NOT NULL,
+            country    VARCHAR(2) NOT NULL
+        )
+    """)
+
+    conn.execute("""
+        CREATE SEQUENCE IF NOT EXISTS markets_id_seq START 1
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS assets (
+            id           INTEGER PRIMARY KEY,
+            name         VARCHAR NOT NULL,
+            ticker       VARCHAR NOT NULL UNIQUE,
+            type         VARCHAR NOT NULL CHECK (type IN ('etf', 'stock', 'fund')),
+            currency     VARCHAR NOT NULL DEFAULT 'EUR',
+            market_id    INTEGER REFERENCES markets(id),
+            image_url    VARCHAR,
+            manual_price BOOLEAN NOT NULL DEFAULT false,
+            created_at   TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+
+    conn.execute("""
+        CREATE SEQUENCE IF NOT EXISTS assets_id_seq START 1
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS transactions (
+            id             INTEGER PRIMARY KEY,
+            asset_id       INTEGER NOT NULL REFERENCES assets(id),
+            type           VARCHAR NOT NULL CHECK (type IN ('buy', 'sell')),
+            broker         VARCHAR NOT NULL CHECK (broker IN ('openbank', 'trade_republic', 'revolut', 'degiro')),
+            shares         DECIMAL(18,8) NOT NULL,
+            price          DECIMAL(18,6) NOT NULL,
+            price_eur      DECIMAL(18,6) NOT NULL,
+            currency       VARCHAR(3) NOT NULL DEFAULT 'EUR',
+            commission     DECIMAL(10,4) NOT NULL DEFAULT 0,
+            commission_eur DECIMAL(10,4) NOT NULL DEFAULT 0,
+            date           DATE NOT NULL,
+            notes          VARCHAR,
+            created_at     TIMESTAMP DEFAULT current_timestamp,
+            updated_at     TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+
+    conn.execute("""
+        CREATE SEQUENCE IF NOT EXISTS transactions_id_seq START 1
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS prices (
+            asset_id  INTEGER NOT NULL REFERENCES assets(id),
+            date      DATE NOT NULL,
+            price     DECIMAL(18,6) NOT NULL,
+            currency  VARCHAR(3) NOT NULL,
+            price_eur DECIMAL(18,6) NOT NULL,
+            PRIMARY KEY (asset_id, date)
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS fx_rates (
+            date      DATE NOT NULL,
+            from_ccy  VARCHAR(3) NOT NULL,
+            to_ccy    VARCHAR(3) NOT NULL,
+            rate      DECIMAL(18,8) NOT NULL,
+            PRIMARY KEY (date, from_ccy, to_ccy)
+        )
+    """)
+
+    # Track when prices were last refreshed
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS refresh_log (
+            id         INTEGER PRIMARY KEY,
+            started_at TIMESTAMP NOT NULL,
+            finished_at TIMESTAMP,
+            assets_updated INTEGER,
+            status     VARCHAR NOT NULL DEFAULT 'running'
+        )
+    """)
+
+    conn.execute("""
+        CREATE SEQUENCE IF NOT EXISTS refresh_log_id_seq START 1
+    """)
+
+
+def _seed_markets(conn: duckdb.DuckDBPyConnection) -> None:
+    existing = conn.execute("SELECT COUNT(*) FROM markets").fetchone()[0]
+    if existing > 0:
+        return
+    for i, (mic, name, tz, open_t, close_t, country) in enumerate(MARKETS_SEED, start=1):
+        conn.execute(
+            "INSERT INTO markets VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [i, mic, name, tz, open_t, close_t, country],
+        )

@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+duckdb>=1.1.0
+pydantic>=2.5.0
+pydantic-settings>=2.0.0
+python-multipart
+yfinance
+investpy
+mstarpy>=10.0.0
+httpx
+pytz
+python-dateutil
