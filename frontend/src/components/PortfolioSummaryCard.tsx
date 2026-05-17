@@ -7,7 +7,7 @@ export function PortfolioSummaryCard() {
   const [summary, setSummary] = useState<PortfolioSummary | null>(null)
 
   useEffect(() => {
-    portfolioApi.summary().then(setSummary)
+    portfolioApi.summary().then(setSummary).catch(() => {})
   }, [])
 
   if (!summary) {

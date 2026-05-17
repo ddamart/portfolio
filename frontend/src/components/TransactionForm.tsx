@@ -39,7 +39,7 @@ export function TransactionForm({ existing, onClose, onSaved }: Props) {
   const [newAsset, setNewAsset] = useState<{ name: string; ticker: string; type: 'stock' | 'etf' | 'fund'; currency: string; manual_price: boolean }>({ name: '', ticker: '', type: 'stock', currency: 'EUR', manual_price: false })
 
   useEffect(() => {
-    assetsApi.list().then(setAssets)
+    assetsApi.list().then(setAssets).catch(() => {})
     if (existing) {
       const found = assets.find(a => a.id === existing.asset_id)
       if (found) setSelectedAsset(found)

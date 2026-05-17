@@ -37,7 +37,7 @@ export function TransactionTable() {
     transactionsApi.list({ period }).then(d => {
       setTransactions(d)
       setLoading(false)
-    })
+    }).catch(() => setLoading(false))
   }
 
   useEffect(() => { load() }, [period])

@@ -18,7 +18,7 @@ export function PortfolioChart() {
     portfolioApi.chart({ period }).then(d => {
       setData(d)
       setLoading(false)
-    })
+    }).catch(() => setLoading(false))
   }, [period])
 
   const isPositive = data.length >= 2

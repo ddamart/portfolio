@@ -122,7 +122,7 @@ export function PortfolioTable() {
     portfolioApi.holdings({ period }).then(d => {
       setHoldings(d)
       setLoading(false)
-    })
+    }).catch(() => setLoading(false))
   }
 
   useEffect(() => { load() }, [period])
