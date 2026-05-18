@@ -2,6 +2,7 @@ import { Component, type ReactNode } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
 import { Navbar } from './components/Navbar'
+import { RefreshProvider } from './contexts/RefreshContext'
 import { AssetsPage } from './pages/Assets'
 import { PortfolioPage } from './pages/Portfolio'
 import { TransactionsPage } from './pages/Transactions'
@@ -37,6 +38,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
 export default function App() {
   return (
     <ErrorBoundary>
+      <RefreshProvider>
       <div className="min-h-screen bg-gray-50 dark:bg-gray-950">
         <Navbar />
         <main>
@@ -50,6 +52,7 @@ export default function App() {
         </main>
         <Toaster position="bottom-right" />
       </div>
+      </RefreshProvider>
     </ErrorBoundary>
   )
 }

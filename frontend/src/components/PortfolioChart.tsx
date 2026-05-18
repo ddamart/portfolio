@@ -5,11 +5,13 @@ import {
 } from 'recharts'
 import type { ChartPoint } from '../api/client'
 import { portfolioApi } from '../api/client'
+import { useRefresh } from '../contexts/RefreshContext'
 import { formatEur } from '../utils/format'
 
 export function PortfolioChart({ period }: { period: string }) {
   const [data, setData] = useState<ChartPoint[]>([])
   const [loading, setLoading] = useState(true)
+  const { lastRefreshAt } = useRefresh()
 
   useEffect(() => {
     setLoading(true)
@@ -17,7 +19,7 @@ export function PortfolioChart({ period }: { period: string }) {
       setData(d)
       setLoading(false)
     }).catch(() => setLoading(false))
-  }, [period])
+  }, [period, lastRefreshAt])
 
   const isPositive = data.length >= 2
     ? data[data.length - 1].value_eur >= data[0].value_eur

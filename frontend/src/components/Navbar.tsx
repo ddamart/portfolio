@@ -1,44 +1,54 @@
-import { useEffect, useState } from 'react'
-import { NavLink } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { NavLink, useLocation } from 'react-router-dom'
 import { pricesApi } from '../api/client'
+import { useRefresh } from '../contexts/RefreshContext'
 import toast from 'react-hot-toast'
 
 export function Navbar() {
   const [status, setStatus] = useState<{ last_refresh: string | null; stale: boolean; refreshing: boolean } | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+  const { markRefreshed } = useRefresh()
+  const location = useLocation()
+  // Prevent double-triggering when route changes fire while a refresh is already running
+  const refreshingRef = useRef(false)
 
   const loadStatus = () => {
     pricesApi.status().then(s => {
       setStatus(s)
-      if (s.stale && !s.refreshing && !refreshing) {
+      if (s.stale && !s.refreshing && !refreshingRef.current) {
         triggerRefresh()
       }
     }).catch(() => {})
   }
 
   const triggerRefresh = async () => {
+    if (refreshingRef.current) return
+    refreshingRef.current = true
     setRefreshing(true)
     try {
       await pricesApi.refresh()
-      // Poll until done
       const interval = setInterval(() => {
         pricesApi.status().then(s => {
           setStatus(s)
           if (!s.refreshing) {
             clearInterval(interval)
+            refreshingRef.current = false
             setRefreshing(false)
+            markRefreshed()
             toast.success('Precios actualizados')
           }
         })
       }, 3000)
     } catch {
+      refreshingRef.current = false
       setRefreshing(false)
     }
   }
 
+  // Re-check on every route change so newly created assets get picked up
   useEffect(() => {
     loadStatus()
-  }, [])
+  }, [location.pathname])
 
   return (
     <nav className="border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 sticky top-0 z-40">

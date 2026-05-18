@@ -9,6 +9,7 @@ import type { SortingState } from '@tanstack/react-table'
 import { useEffect, useState } from 'react'
 import type { HoldingRow } from '../api/client'
 import { portfolioApi } from '../api/client'
+import { useRefresh } from '../contexts/RefreshContext'
 import { formatEur, formatNumber, formatPct, pnlClass } from '../utils/format'
 import { ManualPriceModal } from './ManualPriceModal'
 
@@ -130,6 +131,7 @@ export function PortfolioTable({ period }: { period: string }) {
   const [loading, setLoading] = useState(true)
   const [sorting, setSorting] = useState<SortingState>([{ id: 'value_eur', desc: true }])
   const [manualPriceAsset, setManualPriceAsset] = useState<HoldingRow | null>(null)
+  const { lastRefreshAt } = useRefresh()
 
   const load = () => {
     setLoading(true)
@@ -139,7 +141,7 @@ export function PortfolioTable({ period }: { period: string }) {
     }).catch(() => setLoading(false))
   }
 
-  useEffect(() => { load() }, [period])
+  useEffect(() => { load() }, [period, lastRefreshAt])
 
   const table = useReactTable({
     data: holdings,

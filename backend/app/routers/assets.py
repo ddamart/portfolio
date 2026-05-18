@@ -1,3 +1,4 @@
+import logging
 import re
 from typing import Optional
 
@@ -5,6 +6,8 @@ from fastapi import APIRouter, HTTPException
 from app.database import get_db
 from app.models.asset import AssetCreate, AssetOut, AssetUpdate
 from app.services.price_fetcher import fetch_asset_metadata
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/assets", tags=["assets"])
 
@@ -179,9 +182,11 @@ def create_asset(body: AssetCreate):
     if not body.manual_price:
         try:
             from app.services import price_fetcher
-            price_fetcher.refresh_single_asset(conn, row[0])
-        except Exception:
-            pass
+            n = price_fetcher.refresh_single_asset(conn, row[0])
+            if n == 0:
+                logger.warning("No prices loaded for %s — ticker may be unrecognised or market closed", body.ticker)
+        except Exception as e:
+            logger.warning("Price fetch failed for %s: %s", body.ticker, e)
 
     return _row_to_out(row)
 

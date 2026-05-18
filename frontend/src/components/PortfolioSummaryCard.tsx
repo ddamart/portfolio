@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'react'
 import type { PortfolioSummary } from '../api/client'
 import { portfolioApi } from '../api/client'
+import { useRefresh } from '../contexts/RefreshContext'
 import { formatEur, formatPct, pnlClass } from '../utils/format'
 
 export function PortfolioSummaryCard() {
   const [summary, setSummary] = useState<PortfolioSummary | null>(null)
+  const { lastRefreshAt } = useRefresh()
 
   useEffect(() => {
     portfolioApi.summary().then(setSummary).catch(() => {})
-  }, [])
+  }, [lastRefreshAt])
 
   if (!summary) {
     return (
