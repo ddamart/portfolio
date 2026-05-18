@@ -10,9 +10,11 @@ class PortfolioSummary(BaseModel):
     total_pnl_pct: float
     last_updated: Optional[date]
     # Realized P&L from closed / partially-closed positions (AVCO running method)
-    realized_pnl_eur: float = 0.0
+    realized_pnl_eur: float = 0.0       # price-only P&L (no commissions)
     realized_pnl_pct: float = 0.0
     total_invested_ever_eur: float = 0.0
+    realized_pnl_net_eur: float = 0.0   # net of all commissions (buy + sell)
+    realized_pnl_net_pct: float = 0.0
 
 
 class HoldingRow(BaseModel):

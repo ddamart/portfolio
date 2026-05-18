@@ -20,8 +20,8 @@ export function PortfolioSummaryCard() {
             <div key={i} className="h-24 bg-gray-100 dark:bg-gray-800 rounded-xl" />
           ))}
         </div>
-        <div className="grid grid-cols-2 gap-4">
-          {[1, 2].map(i => (
+        <div className="grid grid-cols-3 gap-4">
+          {[1, 2, 3].map(i => (
             <div key={i} className="h-20 bg-gray-100 dark:bg-gray-800 rounded-xl" />
           ))}
         </div>
@@ -51,7 +51,7 @@ export function PortfolioSummaryCard() {
         />
       </div>
       {hasRealized && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <StatCard
             label="Total invertido (histórico)"
             value={formatEur(summary.total_invested_ever_eur)}
@@ -63,6 +63,13 @@ export function PortfolioSummaryCard() {
             value={formatEur(summary.realized_pnl_eur)}
             sub={formatPct(summary.realized_pnl_pct)}
             valueClass={pnlClass(summary.realized_pnl_eur)}
+            compact
+          />
+          <StatCard
+            label="Ganancia realizada (neta)"
+            value={formatEur(summary.realized_pnl_net_eur)}
+            sub={`${formatPct(summary.realized_pnl_net_pct)} · post comisiones`}
+            valueClass={pnlClass(summary.realized_pnl_net_eur)}
             compact
           />
         </div>

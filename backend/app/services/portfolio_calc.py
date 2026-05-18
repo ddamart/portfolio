@@ -160,43 +160,60 @@ def get_holdings(
 def get_realized_pnl(conn: duckdb.DuckDBPyConnection) -> dict:
     """
     Compute realized P&L using the running Average Cost (AVCO) method.
-    Processes transactions chronologically per asset; on each sell the gain is
-    shares_sold × (sell_price_eur − avg_cost_eur_at_that_moment).
+
+    Two figures returned:
+    - realized_pnl_eur / _pct  : price-only gain (no commissions)
+    - realized_pnl_net_eur / _pct : net of all commissions — buy commissions
+      are folded into the AVCO cost basis; sell commissions are deducted on exit.
     """
     rows = conn.execute("""
-        SELECT asset_id, type, shares, price_eur
+        SELECT asset_id, type, shares, price_eur, commission_eur
         FROM transactions
         ORDER BY asset_id, date, id
     """).fetchall()
 
-    avg_costs: dict[int, float] = {}
+    avg_costs: dict[int, float] = {}      # AVCO price-only
+    avg_costs_net: dict[int, float] = {}  # AVCO including buy commissions
     shares_held: dict[int, float] = {}
     realized_pnl = 0.0
     cost_of_sold = 0.0
+    realized_pnl_net = 0.0
+    cost_of_sold_net = 0.0
     total_invested_ever = 0.0
 
-    for asset_id, tx_type, shares, price_eur in rows:
+    for asset_id, tx_type, shares, price_eur, commission_eur in rows:
         shares = float(shares)
         price_eur = float(price_eur)
+        commission_eur = float(commission_eur)
         cur_shares = shares_held.get(asset_id, 0.0)
         cur_avg = avg_costs.get(asset_id, 0.0)
+        cur_avg_net = avg_costs_net.get(asset_id, 0.0)
 
         if tx_type == "buy":
             total_shares = cur_shares + shares
             avg_costs[asset_id] = (cur_shares * cur_avg + shares * price_eur) / total_shares
+            # Net AVCO: spread buy commission across acquired shares
+            avg_costs_net[asset_id] = (cur_shares * cur_avg_net + shares * price_eur + commission_eur) / total_shares
             shares_held[asset_id] = total_shares
             total_invested_ever += shares * price_eur
         else:
             gain = shares * (price_eur - cur_avg)
             realized_pnl += gain
             cost_of_sold += shares * cur_avg
+            # Net: use commission-adjusted AVCO and subtract sell commission
+            gain_net = shares * (price_eur - cur_avg_net) - commission_eur
+            realized_pnl_net += gain_net
+            cost_of_sold_net += shares * cur_avg_net
             shares_held[asset_id] = max(cur_shares - shares, 0.0)
 
     realized_pct = (realized_pnl / cost_of_sold * 100) if cost_of_sold > 0 else 0.0
+    realized_net_pct = (realized_pnl_net / cost_of_sold_net * 100) if cost_of_sold_net > 0 else 0.0
     return {
         "realized_pnl_eur": realized_pnl,
         "realized_pnl_pct": realized_pct,
         "total_invested_ever_eur": total_invested_ever,
+        "realized_pnl_net_eur": realized_pnl_net,
+        "realized_pnl_net_pct": realized_net_pct,
     }
 
 

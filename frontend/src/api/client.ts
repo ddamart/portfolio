@@ -97,6 +97,8 @@ export interface PortfolioSummary {
   realized_pnl_eur: number
   realized_pnl_pct: number
   total_invested_ever_eur: number
+  realized_pnl_net_eur: number
+  realized_pnl_net_pct: number
 }
 
 export interface ChartPoint {
