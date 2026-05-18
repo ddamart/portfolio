@@ -29,7 +29,29 @@ def is_refreshing() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Background-safe entry points (open their own connection)
+# ---------------------------------------------------------------------------
+
+def refresh_all_prices_bg(db_path: str) -> int:
+    """Open a dedicated connection for the refresh so it never shares the
+    request-handler connection across threads."""
+    conn = duckdb.connect(db_path)
+    try:
+        return refresh_all_prices(conn)
+    finally:
+        conn.close()
+
+
+def refresh_single_asset_bg(db_path: str, asset_id: int) -> int:
+    conn = duckdb.connect(db_path)
+    try:
+        return refresh_single_asset(conn, asset_id)
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Core refresh logic (takes an explicit connection)
 # ---------------------------------------------------------------------------
 
 def refresh_all_prices(conn: duckdb.DuckDBPyConnection) -> int:
@@ -61,7 +83,7 @@ def refresh_all_prices(conn: duckdb.DuckDBPyConnection) -> int:
         fund_ranges = {id_: _get_fetch_range(conn, id_) for id_, _, _, _ in fund_assets}
 
         # Fetch FX rates covering the full backfill window first
-        currencies = set(c for _, _, c in yf_assets) | set(c for _, _, c, _ in fund_assets) - {"EUR"}
+        currencies = (set(c for _, _, c in yf_assets) | set(c for _, _, c, _ in fund_assets)) - {"EUR"}
         if currencies:
             all_starts = [s for s, _ in list(yf_ranges.values()) + list(fund_ranges.values())]
             fx_start = min(all_starts) if all_starts else date.today() - timedelta(days=_REFRESH_DAYS)
@@ -209,14 +231,25 @@ def _fetch_yfinance_batch(
     for ticker in tickers:
         asset_id, currency = ticker_to_id_ccy[ticker]
         try:
-            ticker_data = data if len(tickers) == 1 else data[ticker]
+            # Newer yfinance returns MultiIndex columns even for single tickers;
+            # data[ticker] always gives a flat-column DataFrame regardless.
+            try:
+                ticker_data = data[ticker]
+            except KeyError:
+                ticker_data = data  # older yfinance single-ticker fallback
+            # Flatten any remaining MultiIndex (e.g. ('Close', '') artifacts)
+            if hasattr(ticker_data.columns, "levels"):
+                ticker_data = ticker_data.droplevel(1, axis=1)
             if ticker_data.empty:
                 continue
             for idx_date, row in ticker_data.iterrows():
                 price_date = idx_date.date() if hasattr(idx_date, "date") else idx_date
                 if price_date > today:
                     continue
-                close_price = float(row["Close"])
+                close_price = row.get("Close")
+                if close_price is None or close_price != close_price:  # None or NaN
+                    continue
+                close_price = float(close_price)
                 if close_price <= 0:
                     continue
                 price_eur = _price_to_eur(conn, close_price, currency, price_date)
@@ -338,14 +371,22 @@ def _fetch_fx_rates(
     count = 0
     for pair, ccy in zip(pairs, currencies):
         try:
-            pair_data = data if len(pairs) == 1 else data[pair]
+            try:
+                pair_data = data[pair]
+            except KeyError:
+                pair_data = data
+            if hasattr(pair_data.columns, "levels"):
+                pair_data = pair_data.droplevel(1, axis=1)
             if pair_data.empty:
                 continue
             for idx_date, row in pair_data.iterrows():
                 rate_date = idx_date.date() if hasattr(idx_date, "date") else idx_date
                 if rate_date > today:
                     continue
-                eur_rate = float(row["Close"])
+                eur_rate = row.get("Close")
+                if eur_rate is None or eur_rate != eur_rate:
+                    continue
+                eur_rate = float(eur_rate)
                 if eur_rate <= 0:
                     continue
                 conn.execute(
