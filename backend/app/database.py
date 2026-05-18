@@ -23,6 +23,7 @@ MARKETS_SEED = [
     ("XNYS", "New York Stock Exchange", "America/New_York", "09:30", "16:00", "US"),
     ("XNAS", "NASDAQ", "America/New_York", "09:30", "16:00", "US"),
     ("CNMV", "CNMV Fondos (Spain)", "Europe/Madrid", "00:00", "18:00", "ES"),
+    ("XSTO", "Nasdaq Stockholm AB", "Europe/Stockholm", "09:00", "17:30", "SE"),
 ]
 
 
@@ -179,11 +180,10 @@ def _apply_schema(conn: duckdb.DuckDBPyConnection) -> None:
 
 
 def _seed_markets(conn: duckdb.DuckDBPyConnection) -> None:
-    existing = conn.execute("SELECT COUNT(*) FROM markets").fetchone()[0]
-    if existing > 0:
-        return
-    for i, (mic, name, tz, open_t, close_t, country) in enumerate(MARKETS_SEED, start=1):
-        conn.execute(
-            "INSERT INTO markets VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [i, mic, name, tz, open_t, close_t, country],
-        )
+    # Upsert so new markets added to MARKETS_SEED are inserted into existing databases too.
+    for mic, name, tz, open_t, close_t, country in MARKETS_SEED:
+        conn.execute("""
+            INSERT INTO markets (id, mic, name, timezone, open_time, close_time, country)
+            SELECT nextval('markets_id_seq'), ?, ?, ?, ?, ?, ?
+            WHERE NOT EXISTS (SELECT 1 FROM markets WHERE mic = ?)
+        """, [mic, name, tz, open_t, close_t, country, mic])

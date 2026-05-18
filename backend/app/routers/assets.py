@@ -37,6 +37,7 @@ _SUFFIX_TO_MIC = {
     ".AS": "XAMS",
     ".MC": "XMAD",
     ".L":  "XLON",
+    ".ST": "XSTO",
 }
 
 # ISIN country prefix → default MIC
@@ -46,6 +47,7 @@ _ISIN_COUNTRY_TO_MIC: dict[str, str] = {
     "ES": "XMAD",   # overridden to CNMV for funds below
     "GB": "XLON",
     "US": "XNAS",
+    "SE": "XSTO",
 }
 
 
