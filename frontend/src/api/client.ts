@@ -114,6 +114,13 @@ export interface AssetMeta {
   image_url: string | null
 }
 
+export interface AssetPricePoint {
+  date: string
+  price: number
+  price_eur: number
+  currency: string
+}
+
 export const assetsApi = {
   list: () => api.get<Asset[]>('/assets').then(r => r.data),
   search: (q: string) => api.get<Asset[]>(`/assets/search?q=${encodeURIComponent(q)}`).then(r => r.data),
@@ -125,6 +132,8 @@ export const assetsApi = {
     api.put(`/assets/${id}/price`, null, { params: { price, price_date: date, currency } }).then(r => r.data),
   markets: () => api.get<Market[]>('/assets/markets').then(r => r.data),
   metadata: (ticker: string) => api.get<AssetMeta>(`/assets/metadata?ticker=${encodeURIComponent(ticker)}`).then(r => r.data),
+  history: (id: number, period: string) =>
+    api.get<AssetPricePoint[]>(`/assets/${id}/history?period=${period}`).then(r => r.data),
 }
 
 export const transactionsApi = {

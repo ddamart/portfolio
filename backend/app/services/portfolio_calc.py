@@ -16,6 +16,7 @@ def _period_to_date_range(period: str) -> tuple[Optional[date], Optional[date]]:
         "1d": today - timedelta(days=1),
         "1w": today - timedelta(weeks=1),
         "1m": today - timedelta(days=30),
+        "3m": today - timedelta(days=91),
         "6m": today - timedelta(days=182),
         "ytd": date(today.year, 1, 1),
         "1y": today - timedelta(days=365),

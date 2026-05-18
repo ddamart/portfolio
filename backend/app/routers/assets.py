@@ -86,6 +86,30 @@ def asset_metadata(ticker: str):
     return fetch_asset_metadata(ticker)
 
 
+@router.get("/{asset_id}/history")
+def asset_price_history(asset_id: int, period: str = "1y"):
+    """Return price history for a single asset filtered by period."""
+    conn = get_db()
+    if not conn.execute("SELECT id FROM assets WHERE id = ?", [asset_id]).fetchone():
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    from app.services.portfolio_calc import _period_to_date_range
+    date_from, _ = _period_to_date_range(period)
+
+    if date_from:
+        rows = conn.execute(
+            "SELECT date, price, price_eur, currency FROM prices WHERE asset_id = ? AND date >= ? ORDER BY date ASC",
+            [asset_id, date_from],
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT date, price, price_eur, currency FROM prices WHERE asset_id = ? ORDER BY date ASC",
+            [asset_id],
+        ).fetchall()
+
+    return [{"date": str(r[0]), "price": float(r[1]), "price_eur": float(r[2]), "currency": r[3]} for r in rows]
+
+
 @router.delete("/{asset_id}", status_code=204)
 def delete_asset(asset_id: int):
     conn = get_db()

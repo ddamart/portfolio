@@ -2,25 +2,9 @@ import { useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
 import type { Asset, Market } from '../api/client'
 import { assetsApi, pricesApi } from '../api/client'
+import { AssetDetailDrawer } from '../components/AssetDetailDrawer'
+import { AssetLogo } from '../components/AssetLogo'
 import { ManualPriceModal } from '../components/ManualPriceModal'
-
-
-function AssetLogo({ asset }: { asset: Asset }) {
-  const [err, setErr] = useState(false)
-  if (asset.image_url && !err) {
-    return (
-      <img src={asset.image_url} alt="" className="w-8 h-8 rounded-full object-contain bg-white border border-gray-100 dark:border-gray-700 shrink-0"
-        onError={() => setErr(true)} />
-    )
-  }
-  return (
-    <div className="w-8 h-8 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center shrink-0">
-      <span className="text-xs font-bold text-gray-500 dark:text-gray-400">
-        {asset.ticker.slice(0, 2).toUpperCase()}
-      </span>
-    </div>
-  )
-}
 
 interface EditDraft {
   name: string
@@ -135,6 +119,7 @@ export function AssetsPage() {
   const [loading, setLoading] = useState(true)
   const [editAsset, setEditAsset] = useState<Asset | null>(null)
   const [priceAsset, setPriceAsset] = useState<Asset | null>(null)
+  const [detailAsset, setDetailAsset] = useState<Asset | null>(null)
   const [refreshingId, setRefreshingId] = useState<number | null>(null)
   const [search, setSearch] = useState('')
 
@@ -223,7 +208,11 @@ export function AssetsPage() {
                   {assets.length === 0 ? 'No hay activos. Crea uno desde el formulario de transacciones.' : 'Sin resultados.'}
                 </td></tr>
               ) : filtered.map(asset => (
-                <tr key={asset.id} className="border-b border-gray-50 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors">
+                <tr
+                  key={asset.id}
+                  onClick={() => setDetailAsset(asset)}
+                  className="border-b border-gray-50 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors cursor-pointer"
+                >
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
                       <AssetLogo asset={asset} />
@@ -237,7 +226,7 @@ export function AssetsPage() {
                   <td className="px-4 py-3">{typeBadge(asset.type)}</td>
                   <td className="px-4 py-3 text-gray-600 dark:text-gray-300">{asset.currency}</td>
                   <td className="px-4 py-3 text-gray-500 text-xs">{marketName(asset.market_id)}</td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                     {asset.manual_price ? (
                       <button onClick={() => setPriceAsset(asset)}
                         className="text-xs text-amber-500 hover:text-amber-600 underline whitespace-nowrap">
@@ -250,7 +239,7 @@ export function AssetsPage() {
                       </button>
                     )}
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                     <div className="flex items-center gap-2 justify-end">
                       <button onClick={() => setEditAsset(asset)}
                         className="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">
@@ -279,6 +268,13 @@ export function AssetsPage() {
           asset={{ asset_id: priceAsset.id, ticker: priceAsset.ticker, currency: priceAsset.currency }}
           onClose={() => setPriceAsset(null)}
           onSaved={load}
+        />
+      )}
+
+      {detailAsset && (
+        <AssetDetailDrawer
+          asset={detailAsset}
+          onClose={() => setDetailAsset(null)}
         />
       )}
     </div>
