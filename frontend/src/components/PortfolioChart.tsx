@@ -197,7 +197,8 @@ export function PortfolioChart({ period, dateFrom, dateTo }: { period: string; d
             {eventDots.map(({ snap, txs }) => {
               const hasBuy = txs.some(t => t.type === 'buy')
               const hasSell = txs.some(t => t.type === 'sell')
-              const dotColor = hasBuy && hasSell ? '#a855f7' : hasBuy ? '#22c55e' : '#ef4444'
+              const mixed = hasBuy && hasSell
+              const dotColor = mixed ? '#9ca3af' : hasBuy ? '#22c55e' : '#ef4444'
               return (
                 <ReferenceDot
                   key={snap.date}
@@ -207,8 +208,8 @@ export function PortfolioChart({ period, dateFrom, dateTo }: { period: string; d
                   fill={dotColor}
                   stroke="#111827"
                   strokeWidth={1.5}
-                  label={{
-                    value: hasBuy && hasSell ? 'C+V' : hasBuy ? 'C' : 'V',
+                  label={mixed ? undefined : {
+                    value: hasBuy ? 'C' : 'V',
                     position: 'top',
                     fontSize: 9,
                     fontWeight: 700,
