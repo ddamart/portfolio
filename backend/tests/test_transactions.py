@@ -1,6 +1,6 @@
 """Tests for /api/transactions endpoints."""
 import pytest
-from .conftest import create_asset, create_buy, create_fx_rate
+from .conftest import create_asset, create_buy, create_fx_rate, create_sell
 import app.database as db_module
 
 
@@ -266,6 +266,81 @@ class TestUpdateTransaction:
         r = client.put(f"/api/transactions/{tx['id']}", json={"type": "sell"})
         # For now we just document the status returned; don't assert 200 vs 422 here
         assert r.status_code in (200, 422)
+
+
+class TestRealizedPnL:
+    """AVCO-based realized P&L on sell transactions."""
+
+    def test_buy_has_no_realized_pnl(self, client):
+        asset = create_asset(client, currency="EUR")
+        create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR")
+        txs = client.get("/api/transactions").json()
+        assert txs[0]["realized_pnl_eur"] is None
+        assert txs[0]["cost_basis_eur"] is None
+
+    def test_sell_after_single_buy(self, client):
+        """Simple case: buy 10 @ 100, sell 5 @ 120. P&L = 5 × (120 − 100) = 100."""
+        asset = create_asset(client, currency="EUR")
+        create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR", date="2024-01-01")
+        create_sell(client, asset["id"], shares=5, price=120.0, currency="EUR", date="2024-06-01")
+        sell = next(t for t in client.get("/api/transactions").json() if t["type"] == "sell")
+        assert abs(sell["cost_basis_eur"] - 100.0) < 0.01
+        assert abs(sell["realized_pnl_eur"] - 100.0) < 0.01
+
+    def test_avco_weighted_average_across_buys(self, client):
+        """Buy 5 @ 100 then 5 @ 120 → AVCO = 110. Sell 3 @ 130 → P&L = 3 × 20 = 60."""
+        asset = create_asset(client, currency="EUR")
+        create_buy(client, asset["id"], shares=5, price=100.0, currency="EUR", date="2024-01-01")
+        create_buy(client, asset["id"], shares=5, price=120.0, currency="EUR", date="2024-02-01")
+        create_sell(client, asset["id"], shares=3, price=130.0, currency="EUR", date="2024-06-01")
+        sell = next(t for t in client.get("/api/transactions").json() if t["type"] == "sell")
+        assert abs(sell["cost_basis_eur"] - 110.0) < 0.01
+        assert abs(sell["realized_pnl_eur"] - 60.0) < 0.01
+
+    def test_sell_below_cost_negative_pnl(self, client):
+        """Selling below AVCO produces a negative realized P&L."""
+        asset = create_asset(client, currency="EUR")
+        create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR", date="2024-01-01")
+        create_sell(client, asset["id"], shares=5, price=80.0, currency="EUR", date="2024-06-01")
+        sell = next(t for t in client.get("/api/transactions").json() if t["type"] == "sell")
+        assert sell["realized_pnl_eur"] < 0
+        assert abs(sell["realized_pnl_eur"] - (-100.0)) < 0.01
+
+    def test_commission_deducted_from_pnl(self, client):
+        """P&L is net of sell commission: 5 × (120 − 100) − 2 commission = 98."""
+        asset = create_asset(client, currency="EUR")
+        create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR", date="2024-01-01")
+        client.post("/api/transactions", json={
+            "asset_id": asset["id"], "type": "sell", "broker": "degiro",
+            "shares": 5, "price": 120.0, "currency": "EUR",
+            "commission": 2.0, "date": "2024-06-01",
+        })
+        sell = next(t for t in client.get("/api/transactions").json() if t["type"] == "sell")
+        assert abs(sell["realized_pnl_eur"] - 98.0) < 0.01
+
+    def test_avco_correct_when_buy_excluded_by_date_filter(self, client):
+        """Date-filtered list must still use the correct AVCO even when the buy is hidden."""
+        asset = create_asset(client, currency="EUR")
+        create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR", date="2022-01-01")
+        create_sell(client, asset["id"], shares=5, price=120.0, currency="EUR", date="2024-06-01")
+        txs = client.get("/api/transactions?date_from=2024-01-01").json()
+        assert len(txs) == 1
+        sell = txs[0]
+        assert sell["type"] == "sell"
+        assert abs(sell["cost_basis_eur"] - 100.0) < 0.01
+        assert abs(sell["realized_pnl_eur"] - 100.0) < 0.01
+
+    def test_multiple_sells_each_use_correct_avco(self, client):
+        """Two sells in sequence — AVCO is the same for both (no buys between them)."""
+        asset = create_asset(client, currency="EUR")
+        create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR", date="2024-01-01")
+        create_sell(client, asset["id"], shares=3, price=120.0, currency="EUR", date="2024-06-01")
+        create_sell(client, asset["id"], shares=3, price=130.0, currency="EUR", date="2024-07-01")
+        sells = [t for t in client.get("/api/transactions?sort_by=date&sort_dir=asc").json() if t["type"] == "sell"]
+        assert len(sells) == 2
+        # Both sells use AVCO = 100 (no new buys in between)
+        for s in sells:
+            assert abs(s["cost_basis_eur"] - 100.0) < 0.01
 
 
 class TestDeleteTransaction:
