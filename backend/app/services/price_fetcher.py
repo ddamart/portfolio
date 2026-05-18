@@ -141,10 +141,37 @@ def fetch_asset_metadata(ticker: str) -> dict:
         return {
             "name": info.get("longName") or info.get("shortName") or ticker,
             "currency": (info.get("currency") or "EUR").upper(),
-            "image_url": info.get("logo_url"),
+            "image_url": _resolve_logo(info),
         }
     except Exception:
         return {"name": ticker, "currency": "EUR", "image_url": None}
+
+
+def _resolve_logo(info: dict) -> Optional[str]:
+    """
+    Try multiple sources for a company logo URL.
+    Priority: yfinance logo_url → Clearbit (from website domain).
+    The frontend's onError handler falls back to initials if the URL returns 404.
+    """
+    # 1. yfinance provides logo_url directly for some tickers
+    logo = info.get("logo_url")
+    if logo:
+        return logo
+
+    # 2. Clearbit Logo API — free, no key required, 404 for unknown companies
+    website = info.get("website") or ""
+    if website:
+        try:
+            from urllib.parse import urlparse
+            netloc = urlparse(website).netloc
+            # strip leading www. safely (lstrip chars, not prefix)
+            domain = netloc[4:] if netloc.startswith("www.") else netloc
+            if domain:
+                return f"https://logo.clearbit.com/{domain}"
+        except Exception:
+            pass
+
+    return None
 
 
 # ---------------------------------------------------------------------------
