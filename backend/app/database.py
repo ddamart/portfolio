@@ -30,11 +30,18 @@ def init_db(path: str) -> None:
     try:
         _conn = duckdb.connect(path)
     except Exception as e:
+        err = str(e)
         wal = path + ".wal"
-        if os.path.exists(wal) and ("WAL" in str(e) or "InternalException" in str(e)):
+        if os.path.exists(wal) and ("WAL" in err or "InternalException" in err):
             logger.warning("DuckDB WAL replay failed — removing corrupt WAL and retrying (recent uncommitted writes may be lost)")
             os.remove(wal)
             _conn = duckdb.connect(path)
+        elif "being utilized by another process" in err or "already open" in err.lower():
+            raise RuntimeError(
+                f"Database file is locked by another process. "
+                f"A previous server instance may still be running. "
+                f"Stop it (taskkill /IM python.exe /F on Windows) and retry."
+            ) from e
         else:
             raise
     _apply_schema(_conn)
