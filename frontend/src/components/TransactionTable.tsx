@@ -11,6 +11,7 @@ import toast from 'react-hot-toast'
 import type { Transaction } from '../api/client'
 import { transactionsApi } from '../api/client'
 import { formatEur, formatNumber } from '../utils/format'
+import { AssetLogo } from './AssetLogo'
 import { PeriodFilter } from './PeriodFilter'
 import { TransactionForm } from './TransactionForm'
 
@@ -25,6 +26,8 @@ const col = createColumnHelper<Transaction>()
 
 export function TransactionTable() {
   const [period, setPeriod] = useState('all')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [loading, setLoading] = useState(true)
   const [sorting, setSorting] = useState<SortingState>([{ id: 'date', desc: true }])
@@ -34,13 +37,16 @@ export function TransactionTable() {
 
   const load = () => {
     setLoading(true)
-    transactionsApi.list({ period }).then(d => {
+    const params: Record<string, string> = period === 'custom'
+      ? { ...(dateFrom && { date_from: dateFrom }), ...(dateTo && { date_to: dateTo }) }
+      : { period }
+    transactionsApi.list(params).then(d => {
       setTransactions(d)
       setLoading(false)
     }).catch(() => setLoading(false))
   }
 
-  useEffect(() => { load() }, [period])
+  useEffect(() => { load() }, [period, dateFrom, dateTo])
 
   const handleDelete = async (tx: Transaction) => {
     if (!confirm(`¿Eliminar transacción de ${tx.shares} × ${tx.asset_ticker}?`)) return
@@ -64,9 +70,15 @@ export function TransactionTable() {
     col.accessor('asset_name', {
       header: 'Activo',
       cell: info => (
-        <div>
-          <span className="font-medium text-gray-900 dark:text-white">{info.getValue()}</span>
-          <span className="text-xs text-gray-400 ml-1">{info.row.original.asset_ticker}</span>
+        <div className="flex items-center gap-2">
+          <AssetLogo
+            asset={{ image_url: info.row.original.asset_image_url, ticker: info.row.original.asset_ticker }}
+            className="w-7 h-7"
+          />
+          <div>
+            <span className="font-medium text-gray-900 dark:text-white">{info.getValue()}</span>
+            <span className="block text-xs font-mono text-gray-400">{info.row.original.asset_ticker}</span>
+          </div>
         </div>
       ),
     }),
@@ -133,7 +145,13 @@ export function TransactionTable() {
       <div className="flex flex-wrap items-center justify-between gap-3 p-4 border-b border-gray-200 dark:border-gray-700">
         <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Transacciones</h2>
         <div className="flex items-center gap-3">
-          <PeriodFilter value={period} onChange={setPeriod} />
+          <PeriodFilter
+              value={period}
+              onChange={setPeriod}
+              dateFrom={dateFrom}
+              dateTo={dateTo}
+              onDateRange={(from, to) => { setDateFrom(from); setDateTo(to) }}
+            />
           <button
             onClick={() => setShowAdd(true)}
             className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"

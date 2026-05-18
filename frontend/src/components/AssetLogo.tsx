@@ -1,7 +1,11 @@
 import { useState } from 'react'
-import type { Asset } from '../api/client'
 
-export function AssetLogo({ asset, className = 'w-8 h-8' }: { asset: Asset; className?: string }) {
+interface AssetLogoProps {
+  asset: { image_url: string | null; ticker: string }
+  className?: string
+}
+
+export function AssetLogo({ asset, className = 'w-8 h-8' }: AssetLogoProps) {
   const [err, setErr] = useState(false)
   if (asset.image_url && !err) {
     return (

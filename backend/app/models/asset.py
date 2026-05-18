@@ -61,3 +61,4 @@ class AssetOut(BaseModel):
     manual_price: bool
     isin: Optional[str]
     created_at: datetime
+    in_portfolio: bool = False

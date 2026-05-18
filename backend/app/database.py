@@ -1,10 +1,18 @@
 import logging
 import os
+import threading
 import duckdb
 
 logger = logging.getLogger(__name__)
 
-_conn: duckdb.DuckDBPyConnection | None = None
+# Path to the DB file — set once by init_db(), read by every thread
+_db_path: str = ""
+
+# Each FastAPI worker thread gets its own DuckDB connection via threading.local().
+# DuckDB supports multiple connections to the same file from the same process
+# (one writer + many readers via MVCC). Sharing a single connection across
+# threads is explicitly NOT safe per DuckDB docs.
+_local = threading.local()
 
 MARKETS_SEED = [
     # (mic, name, timezone, open_time, close_time, country)
@@ -19,40 +27,52 @@ MARKETS_SEED = [
 
 
 def get_db() -> duckdb.DuckDBPyConnection:
-    if _conn is None:
+    """Return the calling thread's own DuckDB connection, creating it on first use."""
+    if not _db_path:
         raise RuntimeError("Database not initialized. Call init_db() first.")
-    return _conn
+    conn = getattr(_local, "conn", None)
+    if conn is None:
+        _local.conn = duckdb.connect(_db_path)
+    return _local.conn
 
 
 def init_db(path: str) -> None:
-    global _conn
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    global _db_path
+    if path != ":memory:":
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    _db_path = path
+
+    # Bootstrap: apply schema and seed on a temporary connection.
+    # Each thread will open its own connection via get_db() on first request.
     try:
-        _conn = duckdb.connect(path)
+        bootstrap = duckdb.connect(path)
     except Exception as e:
         err = str(e)
         wal = path + ".wal"
         if os.path.exists(wal) and ("WAL" in err or "InternalException" in err):
-            logger.warning("DuckDB WAL replay failed — removing corrupt WAL and retrying (recent uncommitted writes may be lost)")
+            logger.warning("DuckDB WAL replay failed — removing corrupt WAL and retrying")
             os.remove(wal)
-            _conn = duckdb.connect(path)
+            bootstrap = duckdb.connect(path)
         elif "being utilized by another process" in err or "already open" in err.lower():
             raise RuntimeError(
-                f"Database file is locked by another process. "
-                f"A previous server instance may still be running. "
-                f"Stop it (taskkill /IM python.exe /F on Windows) and retry."
+                "Database file is locked by another process. "
+                "Stop the previous server instance and retry."
             ) from e
         else:
             raise
-    _apply_schema(_conn)
-    _seed_markets(_conn)
+    _apply_schema(bootstrap)
+    _seed_markets(bootstrap)
+    bootstrap.close()
 
 
 def close_db() -> None:
-    global _conn
-    if _conn is not None:
-        _conn.close()
-        _conn = None
+    """Close this thread's connection (called from lifespan on shutdown)."""
+    global _db_path
+    conn = getattr(_local, "conn", None)
+    if conn is not None:
+        conn.close()
+        _local.conn = None
+    _db_path = ""
 
 
 def _apply_schema(conn: duckdb.DuckDBPyConnection) -> None:
@@ -143,7 +163,6 @@ def _apply_schema(conn: duckdb.DuckDBPyConnection) -> None:
         )
     """)
 
-    # Track when prices were last refreshed
     conn.execute("""
         CREATE TABLE IF NOT EXISTS refresh_log (
             id         INTEGER PRIMARY KEY,

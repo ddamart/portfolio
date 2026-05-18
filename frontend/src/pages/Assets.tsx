@@ -150,6 +150,7 @@ export function AssetsPage() {
   const [detailAsset, setDetailAsset] = useState<Asset | null>(null)
   const [refreshingId, setRefreshingId] = useState<number | null>(null)
   const [search, setSearch] = useState('')
+  const [onlyPortfolio, setOnlyPortfolio] = useState(false)
 
   const load = () => {
     setLoading(true)
@@ -187,7 +188,8 @@ export function AssetsPage() {
 
   const filtered = assets.filter(a => {
     const q = search.toLowerCase()
-    return !q || a.ticker.toLowerCase().includes(q) || a.name.toLowerCase().includes(q) || (a.isin ?? '').toLowerCase().includes(q)
+    const matchSearch = !q || a.ticker.toLowerCase().includes(q) || a.name.toLowerCase().includes(q) || (a.isin ?? '').toLowerCase().includes(q)
+    return matchSearch && (!onlyPortfolio || a.in_portfolio)
   })
 
   const marketName = (id: number | null) => markets.find(m => m.id === id)?.mic ?? '—'
@@ -209,11 +211,23 @@ export function AssetsPage() {
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-gray-900 dark:text-white">Activos</h1>
-        <input
-          value={search} onChange={e => setSearch(e.target.value)}
-          placeholder="Filtrar por ticker, nombre o ISIN…"
-          className="border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-1.5 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 w-72"
-        />
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setOnlyPortfolio(v => !v)}
+            className={`text-xs px-3 py-1.5 rounded-full border font-medium transition-colors ${
+              onlyPortfolio
+                ? 'bg-emerald-100 border-emerald-300 text-emerald-700 dark:bg-emerald-900/40 dark:border-emerald-700 dark:text-emerald-300'
+                : 'border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400 hover:border-gray-400'
+            }`}
+          >
+            En cartera
+          </button>
+          <input
+            value={search} onChange={e => setSearch(e.target.value)}
+            placeholder="Filtrar por ticker, nombre o ISIN…"
+            className="border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-1.5 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 w-72"
+          />
+        </div>
       </div>
 
       <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
@@ -221,7 +235,7 @@ export function AssetsPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-gray-100 dark:border-gray-700">
-                {['Activo', 'ISIN', 'Tipo', 'Divisa', 'Mercado', 'Precio', ''].map(h => (
+                {['Activo', 'ISIN', 'Tipo', 'Cartera', 'Divisa', 'Mercado', 'Precio', ''].map(h => (
                   <th key={h} className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap">
                     {h}
                   </th>
@@ -230,9 +244,9 @@ export function AssetsPage() {
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={7} className="text-center py-12 text-gray-400">Cargando…</td></tr>
+                <tr><td colSpan={8} className="text-center py-12 text-gray-400">Cargando…</td></tr>
               ) : filtered.length === 0 ? (
-                <tr><td colSpan={7} className="text-center py-12 text-gray-400 text-sm">
+                <tr><td colSpan={8} className="text-center py-12 text-gray-400 text-sm">
                   {assets.length === 0 ? 'No hay activos. Crea uno desde el formulario de transacciones.' : 'Sin resultados.'}
                 </td></tr>
               ) : filtered.map(asset => (
@@ -252,6 +266,16 @@ export function AssetsPage() {
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-gray-500">{asset.isin ?? '—'}</td>
                   <td className="px-4 py-3">{typeBadge(asset.type)}</td>
+                  <td className="px-4 py-3">
+                    {asset.in_portfolio ? (
+                      <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 font-medium">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
+                        Sí
+                      </span>
+                    ) : (
+                      <span className="text-gray-300 dark:text-gray-600 text-xs">—</span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-gray-600 dark:text-gray-300">{asset.currency}</td>
                   <td className="px-4 py-3 text-gray-500 text-xs">{marketName(asset.market_id)}</td>
                   <td className="px-4 py-3" onClick={e => e.stopPropagation()}>

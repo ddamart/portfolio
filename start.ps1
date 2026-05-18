@@ -2,7 +2,7 @@
 # Run from the project root: .\start.ps1
 
 param(
-    [int]$BackendPort  = 8000,
+    [int]$BackendPort  = 3001,
     [int]$FrontendPort = 5173
 )
 

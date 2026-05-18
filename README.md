@@ -81,7 +81,7 @@ cd frontend && npm run dev
 | URL | Description |
 |-----|-------------|
 | http://localhost:5173 | Web app |
-| http://localhost:8000/docs | Interactive API docs (Swagger UI) |
+| http://localhost:3001/docs | Interactive API docs (Swagger UI) |
 
 ---
 

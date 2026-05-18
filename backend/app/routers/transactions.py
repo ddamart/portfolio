@@ -4,6 +4,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from app.database import get_db
 from app.models.transaction import TransactionCreate, TransactionOut, TransactionUpdate
+from app.services.portfolio_calc import _period_to_date_range
 
 router = APIRouter(prefix="/api/transactions", tags=["transactions"])
 
@@ -11,10 +12,11 @@ router = APIRouter(prefix="/api/transactions", tags=["transactions"])
 def _row_to_out(r) -> TransactionOut:
     return TransactionOut(
         id=r[0], asset_id=r[1], asset_name=r[2], asset_ticker=r[3], asset_type=r[4],
-        type=r[5], broker=r[6], shares=float(r[7]), price=float(r[8]),
-        price_eur=float(r[9]), currency=r[10], commission=float(r[11]),
-        commission_eur=float(r[12]), date=r[13], notes=r[14],
-        created_at=r[15], updated_at=r[16],
+        asset_image_url=r[5],
+        type=r[6], broker=r[7], shares=float(r[8]), price=float(r[9]),
+        price_eur=float(r[10]), currency=r[11], commission=float(r[12]),
+        commission_eur=float(r[13]), date=r[14], notes=r[15],
+        created_at=r[16], updated_at=r[17],
     )
 
 
@@ -33,7 +35,6 @@ def list_transactions(
 
     # Resolve period to date range
     if period and not date_from:
-        from app.services.portfolio_calc import _period_to_date_range
         date_from, date_to = _period_to_date_range(period)
 
     filters = []
@@ -63,7 +64,7 @@ def list_transactions(
 
     query = f"""
     SELECT
-        t.id, t.asset_id, a.name, a.ticker, a.type,
+        t.id, t.asset_id, a.name, a.ticker, a.type, a.image_url,
         t.type, t.broker, t.shares, t.price, t.price_eur,
         t.currency, t.commission, t.commission_eur,
         t.date, t.notes, t.created_at, t.updated_at
@@ -81,7 +82,7 @@ def list_transactions(
 def get_transaction(tx_id: int):
     conn = get_db()
     row = conn.execute("""
-        SELECT t.id, t.asset_id, a.name, a.ticker, a.type,
+        SELECT t.id, t.asset_id, a.name, a.ticker, a.type, a.image_url,
                t.type, t.broker, t.shares, t.price, t.price_eur,
                t.currency, t.commission, t.commission_eur,
                t.date, t.notes, t.created_at, t.updated_at
@@ -139,7 +140,7 @@ def create_transaction(body: TransactionCreate):
     )
 
     row = conn.execute("""
-        SELECT t.id, t.asset_id, a.name, a.ticker, a.type,
+        SELECT t.id, t.asset_id, a.name, a.ticker, a.type, a.image_url,
                t.type, t.broker, t.shares, t.price, t.price_eur,
                t.currency, t.commission, t.commission_eur,
                t.date, t.notes, t.created_at, t.updated_at
@@ -176,7 +177,7 @@ def update_transaction(tx_id: int, body: TransactionUpdate):
     )
 
     row = conn.execute("""
-        SELECT t.id, t.asset_id, a.name, a.ticker, a.type,
+        SELECT t.id, t.asset_id, a.name, a.ticker, a.type, a.image_url,
                t.type, t.broker, t.shares, t.price, t.price_eur,
                t.currency, t.commission, t.commission_eur,
                t.date, t.notes, t.created_at, t.updated_at
