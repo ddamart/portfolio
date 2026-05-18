@@ -112,22 +112,37 @@ export function TransactionTable() {
     }),
     col.accessor('price', {
       header: 'Precio',
-      cell: info => `${formatNumber(info.getValue(), 4)} ${info.row.original.currency}`,
-    }),
-    col.accessor('price_eur', {
-      header: 'Precio (€)',
-      cell: info => formatEur(info.getValue()),
+      cell: info => {
+        const row = info.row.original
+        const isEur = row.currency === 'EUR'
+        return (
+          <div>
+            <div>{formatNumber(info.getValue(), 4)} {row.currency}</div>
+            {!isEur && <div className="text-xs text-gray-400">{formatEur(row.price_eur)}</div>}
+          </div>
+        )
+      },
     }),
     col.display({
-      id: 'cost_eur',
-      header: 'Coste (€)',
-      cell: info => formatEur(info.row.original.shares * info.row.original.price_eur),
-    }),
-    col.accessor('commission', {
-      header: 'Comisión',
-      cell: info => info.getValue() > 0
-        ? `${formatNumber(info.getValue(), 2)} ${info.row.original.currency}`
-        : <span className="text-gray-400">—</span>,
+      id: 'cost',
+      header: 'Coste / Com.',
+      cell: info => {
+        const row = info.row.original
+        const isEur = row.currency === 'EUR'
+        const costEur = row.shares * row.price_eur
+        const costLocal = row.shares * row.price
+        return (
+          <div>
+            <div>{formatEur(costEur)}</div>
+            {!isEur && <div className="text-xs text-gray-400">{formatNumber(costLocal, 2)} {row.currency}</div>}
+            {row.commission > 0 && (
+              <div className="text-xs text-gray-400 mt-0.5">
+                + {formatNumber(row.commission, 2)} {row.currency}
+              </div>
+            )}
+          </div>
+        )
+      },
     }),
   ]
 
