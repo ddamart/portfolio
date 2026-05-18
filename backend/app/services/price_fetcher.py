@@ -458,6 +458,22 @@ def _fetch_fx_rates(
 # Shared helpers
 # ---------------------------------------------------------------------------
 
+def fetch_fx_rate_on_demand(conn: duckdb.DuckDBPyConnection, currency: str, on_date: date) -> Optional[float]:
+    """
+    Fetch and cache the FX rate for `currency → EUR` around `on_date` from yfinance.
+    Called when the local fx_rates cache has no entry for that date.
+    Fetches from 7 days before on_date to today so the result is stored for future use.
+    Returns the rate or None if yfinance has no data.
+    """
+    start = on_date - timedelta(days=7)
+    _fetch_fx_rates(conn, [currency.upper()], start)
+    row = conn.execute(
+        "SELECT rate FROM fx_rates WHERE from_ccy = ? AND to_ccy = 'EUR' AND date <= ? ORDER BY date DESC LIMIT 1",
+        [currency.upper(), on_date],
+    ).fetchone()
+    return float(row[0]) if row else None
+
+
 def _price_to_eur(conn, price: float, currency: str, on_date: date) -> float:
     if currency.upper() == "EUR":
         return price

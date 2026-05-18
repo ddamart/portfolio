@@ -26,16 +26,22 @@ def refresh_prices(background_tasks: BackgroundTasks):
 
 @router.get("/fx-rate")
 def fx_rate(currency: str, date: str):
-    """Return the EUR rate for a currency on a given date (for form hints)."""
+    """Return the EUR rate for a currency on a given date (for form hints).
+    Falls back to fetching from yfinance when the date is not in the local cache."""
     from app.services.currency import get_rate_to_eur
+    from app.services.price_fetcher import fetch_fx_rate_on_demand
     from dateutil.parser import parse as parse_date
     conn = get_db()
     if currency.upper() == "EUR":
         return {"rate": 1.0, "found": True}
+    target_date = parse_date(date).date()
     try:
-        rate = get_rate_to_eur(conn, currency.upper(), parse_date(date).date())
+        rate = get_rate_to_eur(conn, currency.upper(), target_date)
         return {"rate": rate, "found": True}
     except ValueError:
+        rate = fetch_fx_rate_on_demand(conn, currency.upper(), target_date)
+        if rate is not None:
+            return {"rate": rate, "found": True}
         return {"rate": None, "found": False}
 
 
