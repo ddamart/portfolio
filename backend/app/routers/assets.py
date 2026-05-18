@@ -127,7 +127,8 @@ def create_asset(body: AssetCreate):
     market_id = body.market_id or _detect_market_id(conn, body.ticker, body.isin, body.type)
 
     conn.execute(
-        "INSERT INTO assets VALUES (nextval('assets_id_seq'), ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)",
+        """INSERT INTO assets (id, name, ticker, type, currency, market_id, image_url, manual_price, isin, created_at)
+           VALUES (nextval('assets_id_seq'), ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)""",
         [name, body.ticker, body.type, currency, market_id, image_url, body.manual_price, body.isin],
     )
 

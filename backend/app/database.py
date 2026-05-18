@@ -1,5 +1,8 @@
+import logging
 import os
 import duckdb
+
+logger = logging.getLogger(__name__)
 
 _conn: duckdb.DuckDBPyConnection | None = None
 
@@ -24,7 +27,16 @@ def get_db() -> duckdb.DuckDBPyConnection:
 def init_db(path: str) -> None:
     global _conn
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    _conn = duckdb.connect(path)
+    try:
+        _conn = duckdb.connect(path)
+    except Exception as e:
+        wal = path + ".wal"
+        if os.path.exists(wal) and ("WAL" in str(e) or "InternalException" in str(e)):
+            logger.warning("DuckDB WAL replay failed — removing corrupt WAL and retrying (recent uncommitted writes may be lost)")
+            os.remove(wal)
+            _conn = duckdb.connect(path)
+        else:
+            raise
     _apply_schema(_conn)
     _seed_markets(_conn)
 
