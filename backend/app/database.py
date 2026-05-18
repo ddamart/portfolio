@@ -180,10 +180,14 @@ def _apply_schema(conn: duckdb.DuckDBPyConnection) -> None:
 
 
 def _seed_markets(conn: duckdb.DuckDBPyConnection) -> None:
-    # Upsert so new markets added to MARKETS_SEED are inserted into existing databases too.
+    # Insert only markets not already present so new entries added to MARKETS_SEED
+    # are picked up by existing databases on next startup.
+    existing = {row[0] for row in conn.execute("SELECT mic FROM markets").fetchall()}
+    next_id = (conn.execute("SELECT COALESCE(MAX(id), 0) FROM markets").fetchone()[0] or 0) + 1
     for mic, name, tz, open_t, close_t, country in MARKETS_SEED:
-        conn.execute("""
-            INSERT INTO markets (id, mic, name, timezone, open_time, close_time, country)
-            SELECT nextval('markets_id_seq'), ?, ?, ?, ?, ?, ?
-            WHERE NOT EXISTS (SELECT 1 FROM markets WHERE mic = ?)
-        """, [mic, name, tz, open_t, close_t, country, mic])
+        if mic not in existing:
+            conn.execute(
+                "INSERT INTO markets VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [next_id, mic, name, tz, open_t, close_t, country],
+            )
+            next_id += 1
