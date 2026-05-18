@@ -31,6 +31,7 @@ interface Props {
 
 interface NewAssetDraft {
   ticker: string
+  isin: string
   name: string
   type: 'stock' | 'etf' | 'fund'
   market_id: number | null
@@ -47,7 +48,7 @@ export function TransactionForm({ existing, onClose, onSaved }: Props) {
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null)
   const [showNewAsset, setShowNewAsset] = useState(false)
   const [newAsset, setNewAsset] = useState<NewAssetDraft>({
-    ticker: '', name: '', type: 'stock', market_id: null, currency: 'EUR', manual_price: false,
+    ticker: '', isin: '', name: '', type: 'stock', market_id: null, currency: 'EUR', manual_price: false,
   })
   const [markets, setMarkets] = useState<Market[]>([])
   const [creatingAsset, setCreatingAsset] = useState(false)
@@ -118,7 +119,14 @@ export function TransactionForm({ existing, onClose, onSaved }: Props) {
 
   const handleOpenNewAsset = () => {
     setAssetResults([])
-    setNewAsset(d => ({ ...d, ticker: assetQuery.toUpperCase() }))
+    const q = assetQuery.toUpperCase()
+    const isIsin = /^[A-Z]{2}[A-Z0-9]{10}$/.test(q)
+    setNewAsset(d => ({
+      ...d,
+      ticker: isIsin ? '' : q,
+      isin:   isIsin ? q  : '',
+      type:   isIsin && q.startsWith('ES') ? 'fund' : d.type,
+    }))
     setShowNewAsset(true)
   }
 
@@ -141,6 +149,7 @@ export function TransactionForm({ existing, onClose, onSaved }: Props) {
         market_id: newAsset.market_id,
         image_url: null,
         manual_price: newAsset.manual_price,
+        isin: newAsset.isin.trim().toUpperCase() || null,
       })
       handleSelectAsset(created)
       toast.success(`Activo "${created.ticker}" creado`)
@@ -265,12 +274,19 @@ export function TransactionForm({ existing, onClose, onSaved }: Props) {
               <p className="text-sm font-semibold text-blue-700 dark:text-blue-300">Nuevo activo</p>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className={labelCls}>Ticker / ISIN</label>
+                  <label className={labelCls}>Ticker</label>
                   <input value={newAsset.ticker}
                     onChange={e => setNewAsset(d => ({ ...d, ticker: e.target.value.toUpperCase() }))}
-                    className={inputCls} placeholder="AAPL · VWCE.DE · ES0170…" />
+                    className={inputCls} placeholder="AAPL · VWCE.DE · BNP1" />
                 </div>
                 <div>
+                  <label className={labelCls}>ISIN (opcional)</label>
+                  <input value={newAsset.isin}
+                    onChange={e => setNewAsset(d => ({ ...d, isin: e.target.value.toUpperCase() }))}
+                    className={`${inputCls} font-mono`} placeholder="ES0170960015"
+                    maxLength={12} />
+                </div>
+                <div className="col-span-2">
                   <label className={labelCls}>Nombre (opcional)</label>
                   <input value={newAsset.name}
                     onChange={e => setNewAsset(d => ({ ...d, name: e.target.value }))}

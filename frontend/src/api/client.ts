@@ -16,6 +16,7 @@ export interface Asset {
   market_id: number | null
   image_url: string | null
   manual_price: boolean
+  isin: string | null
   created_at: string
 }
 
@@ -110,7 +111,7 @@ export interface PriceStatus {
 export const assetsApi = {
   list: () => api.get<Asset[]>('/assets').then(r => r.data),
   search: (q: string) => api.get<Asset[]>(`/assets/search?q=${encodeURIComponent(q)}`).then(r => r.data),
-  create: (body: Omit<Asset, 'id' | 'created_at'>) => api.post<Asset>('/assets', body).then(r => r.data),
+  create: (body: Omit<Asset, 'id' | 'created_at' | 'isin'> & { isin?: string | null }) => api.post<Asset>('/assets', body).then(r => r.data),
   setManualPrice: (id: number, price: number, date: string, currency: string) =>
     api.put(`/assets/${id}/price`, null, { params: { price, price_date: date, currency } }).then(r => r.data),
   markets: () => api.get<Market[]>('/assets/markets').then(r => r.data),

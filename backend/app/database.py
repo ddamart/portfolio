@@ -63,9 +63,18 @@ def _apply_schema(conn: duckdb.DuckDBPyConnection) -> None:
             market_id    INTEGER REFERENCES markets(id),
             image_url    VARCHAR,
             manual_price BOOLEAN NOT NULL DEFAULT false,
+            isin         VARCHAR,
             created_at   TIMESTAMP DEFAULT current_timestamp
         )
     """)
+
+    # Migration: add isin column to existing databases that predate this column
+    has_isin = conn.execute("""
+        SELECT COUNT(*) FROM information_schema.columns
+        WHERE table_name = 'assets' AND column_name = 'isin'
+    """).fetchone()[0]
+    if not has_isin:
+        conn.execute("ALTER TABLE assets ADD COLUMN isin VARCHAR")
 
     conn.execute("""
         CREATE SEQUENCE IF NOT EXISTS assets_id_seq START 1

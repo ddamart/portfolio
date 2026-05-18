@@ -40,7 +40,7 @@ def refresh_all_prices(conn: duckdb.DuckDBPyConnection) -> int:
     updated = 0
     try:
         holdings = conn.execute("""
-            SELECT a.id, a.ticker, a.type, a.currency, a.manual_price
+            SELECT a.id, a.ticker, a.type, a.currency, a.manual_price, a.isin
             FROM assets a
             WHERE a.id IN (
                 SELECT asset_id FROM transactions
@@ -53,15 +53,15 @@ def refresh_all_prices(conn: duckdb.DuckDBPyConnection) -> int:
         if not holdings:
             return 0
 
-        yf_assets  = [(id_, t, c) for id_, t, tp, c, _ in holdings if tp != "fund"]
-        fund_assets = [(id_, t, c) for id_, t, tp, c, _ in holdings if tp == "fund"]
+        yf_assets   = [(id_, t, c) for id_, t, tp, c, _, _i in holdings if tp != "fund"]
+        fund_assets = [(id_, t, c, isin) for id_, t, tp, c, _, isin in holdings if tp == "fund"]
 
         # Determine fetch ranges per asset
-        yf_ranges  = {id_: _get_fetch_range(conn, id_) for id_, _, _ in yf_assets}
-        fund_ranges = {id_: _get_fetch_range(conn, id_) for id_, _, _ in fund_assets}
+        yf_ranges   = {id_: _get_fetch_range(conn, id_) for id_, _, _ in yf_assets}
+        fund_ranges = {id_: _get_fetch_range(conn, id_) for id_, _, _, _ in fund_assets}
 
         # Fetch FX rates covering the full backfill window first
-        currencies = set(c for _, _, c in yf_assets + fund_assets) - {"EUR"}
+        currencies = set(c for _, _, c in yf_assets) | set(c for _, _, c, _ in fund_assets) - {"EUR"}
         if currencies:
             all_starts = [s for s, _ in list(yf_ranges.values()) + list(fund_ranges.values())]
             fx_start = min(all_starts) if all_starts else date.today() - timedelta(days=_REFRESH_DAYS)
@@ -70,9 +70,9 @@ def refresh_all_prices(conn: duckdb.DuckDBPyConnection) -> int:
         if yf_assets:
             updated += _fetch_yfinance_prices_ranged(conn, yf_assets, yf_ranges)
 
-        for asset_id, ticker, currency in fund_assets:
+        for asset_id, ticker, currency, isin in fund_assets:
             start, end = fund_ranges[asset_id]
-            updated += _fetch_fund_price(conn, asset_id, ticker, currency, start, end)
+            updated += _fetch_fund_price(conn, asset_id, ticker, isin, currency, start, end)
 
         _finish_refresh_log(conn, log_id, updated, "ok")
     except Exception as e:
@@ -87,12 +87,12 @@ def refresh_all_prices(conn: duckdb.DuckDBPyConnection) -> int:
 
 def refresh_single_asset(conn: duckdb.DuckDBPyConnection, asset_id: int) -> int:
     row = conn.execute(
-        "SELECT id, ticker, type, currency, manual_price FROM assets WHERE id = ?",
+        "SELECT id, ticker, type, currency, manual_price, isin FROM assets WHERE id = ?",
         [asset_id],
     ).fetchone()
     if row is None:
         raise ValueError(f"Asset {asset_id} not found")
-    id_, ticker, type_, currency, manual_price = row
+    id_, ticker, type_, currency, manual_price, isin = row
     if manual_price:
         return 0
 
@@ -103,7 +103,7 @@ def refresh_single_asset(conn: duckdb.DuckDBPyConnection, asset_id: int) -> int:
         _fetch_fx_rates(conn, list(currencies), start)
 
     if type_ == "fund":
-        return _fetch_fund_price(conn, id_, ticker, currency, start, end)
+        return _fetch_fund_price(conn, id_, ticker, isin, currency, start, end)
 
     return _fetch_yfinance_prices_ranged(
         conn,
@@ -236,23 +236,28 @@ def _fetch_fund_price(
     conn: duckdb.DuckDBPyConnection,
     asset_id: int,
     ticker: str,
+    isin: Optional[str],
     currency: str,
     start: date,
     end: date,
 ) -> int:
-    count = _try_investpy(conn, asset_id, ticker, currency, start, end)
+    count = _try_investpy(conn, asset_id, ticker, isin, currency, start, end)
     if count > 0:
         return count
-    return _try_mstarpy(conn, asset_id, ticker, currency, start, end)
+    return _try_mstarpy(conn, asset_id, ticker, isin, currency, start, end)
 
 
-def _try_investpy(conn, asset_id, ticker, currency, start: date, end: date) -> int:
+def _try_investpy(
+    conn, asset_id, ticker, isin: Optional[str], currency, start: date, end: date
+) -> int:
     try:
         import investpy
         from_str = start.strftime("%d/%m/%Y")
         to_str   = end.strftime("%d/%m/%Y")
 
-        search_results = investpy.search_quotes(text=ticker, products=["funds"], n_results=1)
+        # ISIN is more reliable than ticker/name for investpy fund search
+        search_term = isin or ticker
+        search_results = investpy.search_quotes(text=search_term, products=["funds"], n_results=1)
         if not search_results:
             return 0
         fund = search_results[0]
@@ -271,14 +276,18 @@ def _try_investpy(conn, asset_id, ticker, currency, start: date, end: date) -> i
             count += 1
         return count
     except Exception as e:
-        logger.debug("investpy failed for %s: %s", ticker, e)
+        logger.debug("investpy failed for %s (isin=%s): %s", ticker, isin, e)
         return 0
 
 
-def _try_mstarpy(conn, asset_id, ticker, currency, start: date, end: date) -> int:
+def _try_mstarpy(
+    conn, asset_id, ticker, isin: Optional[str], currency, start: date, end: date
+) -> int:
     try:
         import mstarpy
-        fund = mstarpy.Fund(term=ticker, country="esp")
+        # Prefer ISIN for Morningstar lookup — avoids ambiguity on name matches
+        search_term = isin or ticker
+        fund = mstarpy.Fund(term=search_term, country="esp")
         hist = fund.nav(start_date=start, end_date=end)
         if not hist:
             return 0
@@ -297,7 +306,7 @@ def _try_mstarpy(conn, asset_id, ticker, currency, start: date, end: date) -> in
             count += 1
         return count
     except Exception as e:
-        logger.debug("mstarpy failed for %s: %s", ticker, e)
+        logger.debug("mstarpy failed for %s (isin=%s): %s", ticker, isin, e)
         return 0
 
 
