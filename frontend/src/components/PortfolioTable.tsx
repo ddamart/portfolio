@@ -72,27 +72,34 @@ const columns = [
   }),
   col.accessor('current_price_eur', {
     header: 'P. Actual €',
-    cell: info => formatEur(info.getValue()),
+    cell: info => {
+      const v = info.getValue()
+      if (v == null) return <span className="text-amber-500 text-xs" title="Sin datos de precio. Actualiza el precio desde Activos.">Sin precio</span>
+      return <span>{formatEur(v)}</span>
+    },
   }),
   col.accessor('value_eur', {
     header: 'Valor (€)',
-    cell: info => <span className="font-medium">{formatEur(info.getValue())}</span>,
+    cell: info => {
+      const v = info.getValue()
+      return <span className="font-medium">{v != null ? formatEur(v) : '—'}</span>
+    },
   }),
   col.accessor('pnl_eur', {
     header: 'G/P (€)',
-    cell: info => (
-      <span className={pnlClass(info.getValue())}>
-        {formatEur(info.getValue())}
-      </span>
-    ),
+    cell: info => {
+      const v = info.getValue()
+      if (v == null) return <span className="text-gray-400">—</span>
+      return <span className={pnlClass(v)}>{formatEur(v)}</span>
+    },
   }),
   col.accessor('gain_pct', {
     header: 'G/P %',
-    cell: info => (
-      <span className={pnlClass(info.getValue())}>
-        {formatPct(info.getValue())}
-      </span>
-    ),
+    cell: info => {
+      const v = info.getValue()
+      if (v == null) return <span className="text-gray-400">—</span>
+      return <span className={pnlClass(v)}>{formatPct(v)}</span>
+    },
   }),
   col.accessor('daily_change_pct', {
     header: 'Var. Diaria',

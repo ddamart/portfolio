@@ -84,12 +84,13 @@ def get_holdings(
         ORDER BY p.asset_id, p.date DESC
     ),
     total_value AS (
-        SELECT SUM(h2.total_shares * lp2.price_eur) AS total
+        -- LEFT JOIN so assets with no prices yet contribute 0 (not excluded)
+        SELECT COALESCE(SUM(h2.total_shares * COALESCE(lp2.price_eur, 0)), 0) AS total
         FROM holdings h2
-        JOIN latest_prices lp2 ON lp2.asset_id = h2.asset_id
+        LEFT JOIN latest_prices lp2 ON lp2.asset_id = h2.asset_id
     )
     SELECT
-        a.id                                                         AS asset_id,
+        a.id                                                              AS asset_id,
         a.name,
         a.ticker,
         a.type,
@@ -99,29 +100,32 @@ def get_holdings(
         h.broker,
         h.total_shares,
         h.avg_buy_price_eur,
-        lp.price                                                     AS current_price,
-        lp.price_eur                                                 AS current_price_eur,
-        h.total_shares * lp.price_eur                               AS value_eur,
-        h.total_shares * lp.price                                   AS value_ccy,
+        lp.price                                                          AS current_price,
+        lp.price_eur                                                      AS current_price_eur,
+        h.total_shares * lp.price_eur                                    AS value_eur,
+        h.total_shares * lp.price                                        AS value_ccy,
         h.total_shares * lp.price_eur - h.total_shares * h.avg_buy_price_eur AS pnl_eur,
-        h.total_shares * lp.price - h.total_shares * (h.avg_buy_price_eur / NULLIF(lp.price_eur / NULLIF(lp.price,0),0)) AS pnl_ccy,
-        (lp.price_eur / NULLIF(h.avg_buy_price_eur, 0) - 1) * 100 AS gain_pct,
-        (lp.price_eur / NULLIF(pp.prev_price_eur, 0) - 1) * 100   AS daily_change_pct,
-        CASE WHEN tv.total > 0
+        h.total_shares * lp.price - h.total_shares * (h.avg_buy_price_eur / NULLIF(lp.price_eur / NULLIF(lp.price, 0), 0)) AS pnl_ccy,
+        (lp.price_eur / NULLIF(h.avg_buy_price_eur, 0) - 1) * 100       AS gain_pct,
+        (lp.price_eur / NULLIF(pp.prev_price_eur, 0) - 1) * 100         AS daily_change_pct,
+        CASE WHEN tv.total > 0 AND lp.price_eur IS NOT NULL
              THEN (h.total_shares * lp.price_eur) / tv.total * 100
-             ELSE 0 END                                              AS allocation_pct
+             ELSE 0 END                                                   AS allocation_pct
     FROM holdings h
     JOIN assets a ON a.id = h.asset_id
-    JOIN latest_prices lp ON lp.asset_id = h.asset_id
+    LEFT JOIN latest_prices lp ON lp.asset_id = h.asset_id
     LEFT JOIN prev_prices pp ON pp.asset_id = h.asset_id
     CROSS JOIN total_value tv
     WHERE 1=1 {type_filter}
-    ORDER BY value_eur DESC
+    ORDER BY COALESCE(value_eur, -1) DESC
     """
 
     rows = conn.execute(query, params).fetchall()
     result = []
     for row in rows:
+        def _f(v) -> Optional[float]:
+            return float(v) if v is not None else None
+
         result.append(
             HoldingRow(
                 asset_id=row[0],
@@ -134,14 +138,14 @@ def get_holdings(
                 broker=row[7],
                 total_shares=float(row[8]),
                 avg_buy_price_eur=float(row[9]),
-                current_price=float(row[10]),
-                current_price_eur=float(row[11]),
-                value_eur=float(row[12]),
-                value_ccy=float(row[13]),
-                pnl_eur=float(row[14]),
-                pnl_ccy=float(row[15]),
-                gain_pct=float(row[16]),
-                daily_change_pct=float(row[17]) if row[17] is not None else None,
+                current_price=_f(row[10]),
+                current_price_eur=_f(row[11]),
+                value_eur=_f(row[12]),
+                value_ccy=_f(row[13]),
+                pnl_eur=_f(row[14]),
+                pnl_ccy=_f(row[15]),
+                gain_pct=_f(row[16]),
+                daily_change_pct=_f(row[17]),
                 allocation_pct=float(row[18]),
             )
         )

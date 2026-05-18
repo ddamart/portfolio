@@ -17,18 +17,19 @@ class HoldingRow(BaseModel):
     ticker: str
     type: str
     currency: str
-    broker: Optional[str]  # None when asset held across multiple brokers
+    broker: Optional[str]
     image_url: Optional[str]
     manual_price: bool
     total_shares: float
     avg_buy_price_eur: float
-    current_price: float
-    current_price_eur: float
-    value_eur: float
-    value_ccy: float
-    pnl_eur: float
-    pnl_ccy: float
-    gain_pct: float
+    # These are None when no price data has been loaded yet for the asset
+    current_price: Optional[float]
+    current_price_eur: Optional[float]
+    value_eur: Optional[float]
+    value_ccy: Optional[float]
+    pnl_eur: Optional[float]
+    pnl_ccy: Optional[float]
+    gain_pct: Optional[float]
     daily_change_pct: Optional[float]
     allocation_pct: float
 

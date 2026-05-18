@@ -70,13 +70,14 @@ export interface HoldingRow {
   manual_price: boolean
   total_shares: number
   avg_buy_price_eur: number
-  current_price: number
-  current_price_eur: number
-  value_eur: number
-  value_ccy: number
-  pnl_eur: number
-  pnl_ccy: number
-  gain_pct: number
+  // null when no price data has been loaded yet for this asset
+  current_price: number | null
+  current_price_eur: number | null
+  value_eur: number | null
+  value_ccy: number | null
+  pnl_eur: number | null
+  pnl_ccy: number | null
+  gain_pct: number | null
   daily_change_pct: number | null
   allocation_pct: number
 }
