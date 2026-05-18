@@ -160,15 +160,32 @@ def get_summary(conn: duckdb.DuckDBPyConnection) -> PortfolioSummary:
     latest_prices AS (
         SELECT DISTINCT ON (asset_id) asset_id, price_eur, date
         FROM prices ORDER BY asset_id, date DESC
+    ),
+    joined AS (
+        SELECT
+            h.total_shares * lp.price_eur                               AS value_eur,
+            h.total_shares * h.avg_buy_price_eur                        AS invested_eur,
+            lp.date
+        FROM holdings h
+        JOIN latest_prices lp ON lp.asset_id = h.asset_id
     )
     SELECT
-        COALESCE(SUM(h.total_shares * lp.price_eur), 0)                     AS total_value_eur,
-        COALESCE(SUM(h.total_shares * h.avg_buy_price_eur), 0)               AS total_invested_eur,
-        COALESCE(SUM(h.total_shares * lp.price_eur - h.total_shares * h.avg_buy_price_eur), 0) AS total_pnl_eur,
-        MAX(lp.date)                                                          AS last_updated
-    FROM holdings h
-    JOIN latest_prices lp ON lp.asset_id = h.asset_id
+        COALESCE(SUM(value_eur), 0)              AS total_value_eur,
+        COALESCE(SUM(invested_eur), 0)           AS total_invested_eur,
+        COALESCE(SUM(value_eur - invested_eur), 0) AS total_pnl_eur,
+        MAX(date)                                AS last_updated
+    FROM joined
     """).fetchone()
+
+    # fetchone() returns None if the inner query has zero rows (no prices loaded yet)
+    if row is None or row[0] is None:
+        return PortfolioSummary(
+            total_value_eur=0.0,
+            total_invested_eur=0.0,
+            total_pnl_eur=0.0,
+            total_pnl_pct=0.0,
+            last_updated=None,
+        )
 
     total_value = float(row[0])
     total_invested = float(row[1])
@@ -193,14 +210,14 @@ def get_chart_data(
     if period and not date_from:
         date_from, date_to = _period_to_date_range(period)
 
-    # Build date range filter
+    # Build date range filter (applied inside date_spine CTE against bare `prices` table)
     date_filter = ""
     params: list = []
     if date_from:
-        date_filter += " AND p.date >= ?"
+        date_filter += " AND date >= ?"
         params.append(date_from)
     if date_to:
-        date_filter += " AND p.date <= ?"
+        date_filter += " AND date <= ?"
         params.append(date_to)
 
     # For each day, calculate the portfolio value based on holdings at that time
