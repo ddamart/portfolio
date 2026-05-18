@@ -16,6 +16,11 @@ const ASSET_TYPES = [
   { value: 'fund',  label: 'Fondo' },
 ]
 
+const CURRENCIES = [
+  'EUR', 'USD', 'GBP', 'CHF', 'SEK', 'DKK', 'NOK',
+  'JPY', 'CAD', 'AUD', 'HKD', 'SGD', 'MXN', 'BRL', 'PLN',
+]
+
 // Default currency per market MIC
 const MARKET_CURRENCY: Record<string, string> = {
   XETR: 'EUR', XAMS: 'EUR', XMAD: 'EUR', CNMV: 'EUR',
@@ -66,7 +71,7 @@ export function TransactionForm({ existing, onClose, onSaved }: Props) {
   const [saving, setSaving]     = useState(false)
 
   // --- EUR rate hint ---
-  const [eurRate, setEurRate] = useState<number | null>(currency.toUpperCase() === 'EUR' ? 1 : null)
+  const [eurRate, setEurRate] = useState<number | null>(currency === 'EUR' ? 1 : null)
 
   // Load markets once
   useEffect(() => {
@@ -91,8 +96,7 @@ export function TransactionForm({ existing, onClose, onSaved }: Props) {
 
   // Fetch EUR rate whenever currency or date changes
   useEffect(() => {
-    if (currency.toUpperCase() === 'EUR') { setEurRate(1); return }
-    if (currency.length !== 3) { setEurRate(null); return }
+    if (currency === 'EUR') { setEurRate(1); return }
     pricesApi.fxRate(currency, date)
       .then(r => setEurRate(r.rate))
       .catch(() => setEurRate(null))
@@ -174,7 +178,7 @@ export function TransactionForm({ existing, onClose, onSaved }: Props) {
       broker,
       shares:     sharesN,
       price:      priceN,
-      currency:   currency.toUpperCase(),
+      currency,
       commission: parseFloat(commission) || 0,
       date,
       notes:      notes || undefined,
@@ -201,7 +205,7 @@ export function TransactionForm({ existing, onClose, onSaved }: Props) {
   const priceEur      = eurRate != null && price      ? parseFloat(price) * eurRate      : null
   const commissionEur = eurRate != null && commission ? parseFloat(commission) * eurRate : null
   const eurHint = (v: number | null) =>
-    v != null && currency.toUpperCase() !== 'EUR'
+    v != null && currency !== 'EUR'
       ? <span className="text-xs text-gray-400 mt-0.5 block">≈ {v.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 4 })} €</span>
       : null
 
@@ -314,9 +318,11 @@ export function TransactionForm({ existing, onClose, onSaved }: Props) {
                 </div>
                 <div>
                   <label className={labelCls}>Divisa</label>
-                  <input value={newAsset.currency}
-                    onChange={e => setNewAsset(d => ({ ...d, currency: e.target.value.toUpperCase() }))}
-                    className={inputCls} maxLength={3} placeholder="EUR" />
+                  <select value={newAsset.currency}
+                    onChange={e => setNewAsset(d => ({ ...d, currency: e.target.value }))}
+                    className={inputCls}>
+                    {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
                 </div>
                 <div className="flex items-end pb-2">
                   <label className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400 cursor-pointer">
@@ -379,27 +385,36 @@ export function TransactionForm({ existing, onClose, onSaved }: Props) {
             </div>
           </div>
 
-          {/* ── Price ─────────────────────────────────── */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className={labelCls}>Precio / participación</label>
-              <div className="flex gap-1">
-                <input type="number" step="any" min="0" value={price}
-                  onChange={e => setPrice(e.target.value)} className={`${inputCls} flex-1`} placeholder="0.00" />
-                <input value={currency} onChange={e => setCurrency(e.target.value.toUpperCase())}
-                  className={`${inputCls} w-16 text-center font-mono`} maxLength={3} title="Divisa" />
-              </div>
-              {eurHint(priceEur)}
-              {eurRate == null && currency.toUpperCase() !== 'EUR' && (
-                <span className="text-xs text-amber-500 mt-0.5 block">Sin tasa FX — actualiza precios para conversión exacta</span>
-              )}
+          {/* ── Price + currency ──────────────────────── */}
+          <div>
+            <label className={labelCls}>Precio / participación</label>
+            <div className="flex rounded-lg border border-gray-300 dark:border-gray-600 overflow-hidden focus-within:ring-2 focus-within:ring-blue-500">
+              <input
+                type="number" step="any" min="0" value={price}
+                onChange={e => setPrice(e.target.value)}
+                placeholder="0.00"
+                className="flex-1 min-w-0 px-3 py-2 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none"
+              />
+              <select
+                value={currency}
+                onChange={e => setCurrency(e.target.value)}
+                className="border-l border-gray-300 dark:border-gray-600 px-2 py-2 text-sm bg-gray-50 dark:bg-gray-600 text-gray-700 dark:text-gray-200 focus:outline-none font-mono"
+              >
+                {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
             </div>
-            <div>
-              <label className={labelCls}>Comisión (opcional)</label>
-              <input type="number" step="any" min="0" value={commission}
-                onChange={e => setCommission(e.target.value)} className={inputCls} placeholder="0.00" />
-              {eurHint(commissionEur)}
-            </div>
+            {eurHint(priceEur)}
+            {eurRate == null && currency !== 'EUR' && (
+              <span className="text-xs text-amber-500 mt-0.5 block">Sin tasa FX — actualiza precios para conversión exacta</span>
+            )}
+          </div>
+
+          {/* ── Commission ────────────────────────────── */}
+          <div>
+            <label className={labelCls}>Comisión en {currency} (opcional)</label>
+            <input type="number" step="any" min="0" value={commission}
+              onChange={e => setCommission(e.target.value)} className={inputCls} placeholder="0.00" />
+            {eurHint(commissionEur)}
           </div>
 
           {/* ── Notes ─────────────────────────────────── */}
