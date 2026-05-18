@@ -1,5 +1,5 @@
 from pydantic import BaseModel, field_validator
-from datetime import date, datetime
+import datetime
 from typing import Optional
 
 
@@ -15,7 +15,7 @@ class TransactionCreate(BaseModel):
     price: float
     currency: str = "EUR"
     commission: float = 0.0
-    date: date
+    date: datetime.date
     notes: Optional[str] = None
     # Computed on the backend from FX table; only send if you already know them
     price_eur: Optional[float] = None
@@ -45,7 +45,7 @@ class TransactionUpdate(BaseModel):
     currency: Optional[str] = None
     commission: Optional[float] = None
     commission_eur: Optional[float] = None
-    date: Optional[date] = None
+    date: Optional[datetime.date] = None
     notes: Optional[str] = None
 
 
@@ -55,6 +55,7 @@ class TransactionOut(BaseModel):
     asset_name: str
     asset_ticker: str
     asset_type: str
+    asset_image_url: Optional[str]
     type: str
     broker: str
     shares: float
@@ -63,7 +64,7 @@ class TransactionOut(BaseModel):
     currency: str
     commission: float
     commission_eur: float
-    date: date
+    date: datetime.date
     notes: Optional[str]
-    created_at: datetime
-    updated_at: datetime
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
