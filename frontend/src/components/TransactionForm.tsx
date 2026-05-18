@@ -108,10 +108,11 @@ export function TransactionForm({ existing, onClose, onSaved }: Props) {
       assetsApi.metadata(t)
         .then(meta => {
           setTickerMeta(meta)
-          // Auto-fill name and currency only if user hasn't typed them manually
           setNewAsset(d => ({
             ...d,
-            name: d.name || meta.name,
+            // Use fetched name if: field is empty, OR still equals the ticker
+            // (which means a previous failed fetch fell back to the ticker symbol)
+            name: (!d.name || d.name.toUpperCase() === t.toUpperCase()) ? meta.name : d.name,
             currency: meta.currency || d.currency,
           }))
         })

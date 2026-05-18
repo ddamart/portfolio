@@ -165,7 +165,10 @@ def create_asset(body: AssetCreate):
     image_url = body.image_url
     if not body.manual_price and body.type != "fund":
         meta = fetch_asset_metadata(body.ticker)
-        name = name or meta["name"]
+        # Treat name == ticker as "not provided" — the frontend falls back to ticker
+        # when yfinance fails, so we must prefer the freshly-fetched full name here.
+        if not name or name.upper() == body.ticker.upper():
+            name = meta["name"]
         currency = currency or meta["currency"]
         image_url = image_url or meta["image_url"]
 

@@ -138,12 +138,19 @@ def fetch_asset_metadata(ticker: str) -> dict:
     """Try to fetch name, currency, and logo_url from yfinance."""
     try:
         info = yf.Ticker(ticker).info
+        name = info.get("longName") or info.get("shortName") or ticker
+        if name == ticker:
+            logger.warning(
+                "fetch_asset_metadata: no name found for %s — info had %d keys: %s",
+                ticker, len(info), list(info.keys())[:8],
+            )
         return {
-            "name": info.get("longName") or info.get("shortName") or ticker,
+            "name": name,
             "currency": (info.get("currency") or "EUR").upper(),
             "image_url": _resolve_logo(info),
         }
-    except Exception:
+    except Exception as e:
+        logger.warning("fetch_asset_metadata failed for %s: %s", ticker, e)
         return {"name": ticker, "currency": "EUR", "image_url": None}
 
 
