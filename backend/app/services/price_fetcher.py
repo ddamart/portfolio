@@ -7,10 +7,13 @@ Strategy per asset type:
   - FX rates       → yfinance (EURUSD=X, EURGBP=X, ...)
 
 Fetch range logic:
-  - Asset with no prices in DB → backfill from oldest transaction date (or 2y ago)
-  - Asset with existing prices → last 5 trading days only
+  - Asset with existing prices → fetch from MAX(date) to today (fills gaps, refreshes today)
+  - Asset with no prices       → backfill from Jan 1 2025 (or 6 months before first
+                                 transaction if that predates Jan 1 2025)
+  - Includes sold assets       → prices kept current for monitoring even after position close
 """
 import logging
+import re
 from datetime import date, timedelta
 from typing import Optional
 
@@ -20,8 +23,7 @@ import yfinance as yf
 logger = logging.getLogger(__name__)
 
 _refreshing: bool = False
-_REFRESH_DAYS = 5          # days to fetch on a normal (non-backfill) refresh
-_BACKFILL_FALLBACK_DAYS = 365 * 2  # used when no transactions exist yet
+_BACKFILL_FLOOR_DATE = date(2025, 1, 1)   # floor when no prior-year transaction exists
 
 
 def is_refreshing() -> bool:
@@ -64,11 +66,7 @@ def refresh_all_prices(conn: duckdb.DuckDBPyConnection) -> int:
         holdings = conn.execute("""
             SELECT a.id, a.ticker, a.type, a.currency, a.manual_price, a.isin
             FROM assets a
-            WHERE a.id IN (
-                SELECT asset_id FROM transactions
-                GROUP BY asset_id
-                HAVING SUM(CASE WHEN type='buy' THEN shares ELSE -shares END) > 0
-            )
+            WHERE a.id IN (SELECT DISTINCT asset_id FROM transactions)
             AND a.manual_price = false
         """).fetchall()
 
@@ -156,27 +154,27 @@ def fetch_asset_metadata(ticker: str) -> dict:
 
 def _resolve_logo(info: dict) -> Optional[str]:
     """
-    Try multiple sources for a company logo URL.
-    Priority: yfinance logo_url → Clearbit (from website domain).
-    The frontend's onError handler falls back to initials if the URL returns 404.
+    Build a logo URL from yfinance asset info.
+    Priority: Google favicon service (from website domain) → yfinance logo_url (if not Clearbit).
+    The frontend onError handler falls back to initials when the URL returns a blank/404.
     """
-    # 1. yfinance provides logo_url directly for some tickers
-    logo = info.get("logo_url")
-    if logo:
-        return logo
+    from urllib.parse import urlparse
 
-    # 2. Clearbit Logo API — free, no key required, 404 for unknown companies
+    # 1. Google's S2 favicon service — free, no key, reliable for major companies
     website = info.get("website") or ""
     if website:
         try:
-            from urllib.parse import urlparse
             netloc = urlparse(website).netloc
-            # strip leading www. safely (lstrip chars, not prefix)
             domain = netloc[4:] if netloc.startswith("www.") else netloc
             if domain:
-                return f"https://logo.clearbit.com/{domain}"
+                return f"https://www.google.com/s2/favicons?domain={domain}&sz=128"
         except Exception:
             pass
+
+    # 2. yfinance logo_url as fallback, but skip dead Clearbit URLs
+    logo = info.get("logo_url") or ""
+    if logo and "clearbit" not in logo:
+        return logo
 
     return None
 
@@ -188,28 +186,46 @@ def _resolve_logo(info: dict) -> Optional[str]:
 def _get_fetch_range(conn: duckdb.DuckDBPyConnection, asset_id: int) -> tuple[date, date]:
     """
     Return (start, end) for a price fetch.
-    - No existing prices → start from oldest transaction date (backfill).
-    - Prices exist       → last N trading days only.
+
+    Desired start = 1 year before the oldest transaction, so there's always a full year
+    of price history before the first purchase (useful for chart context).
+    Falls back to _BACKFILL_FLOOR_DATE if the asset has no transactions.
+
+    - No prices yet  → fetch from desired_start to today.
+    - Prices exist but oldest price row is after desired_start (history gap) →
+      re-fetch from desired_start so the gap is filled.
+    - Prices exist and already cover desired_start → incremental update from
+      MAX(price.date) to today (fast path).
     """
     today = date.today()
-    has_prices = conn.execute(
-        "SELECT COUNT(*) FROM prices WHERE asset_id = ?", [asset_id]
-    ).fetchone()[0]
 
-    if has_prices > 0:
-        return today - timedelta(days=_REFRESH_DAYS), today
-
-    # Backfill: go back to the oldest transaction for this asset
-    row = conn.execute(
+    # Desired backfill start: 1 year before the first purchase (full context window)
+    tx_row = conn.execute(
         "SELECT MIN(date) FROM transactions WHERE asset_id = ?", [asset_id]
     ).fetchone()
-    if row and row[0]:
-        oldest = row[0] if isinstance(row[0], date) else row[0].date()
-        # Give a small buffer before the first transaction
-        return oldest - timedelta(days=5), today
+    desired_start = _BACKFILL_FLOOR_DATE
+    if tx_row and tx_row[0]:
+        oldest_tx = tx_row[0] if isinstance(tx_row[0], date) else tx_row[0].date()
+        desired_start = oldest_tx - timedelta(days=365)
 
-    # Asset exists but no transactions yet — fetch 2 years as a sensible default
-    return today - timedelta(days=_BACKFILL_FALLBACK_DAYS), today
+    # Check existing price coverage
+    row = conn.execute(
+        "SELECT MAX(date), MIN(date) FROM prices WHERE asset_id = ?", [asset_id]
+    ).fetchone()
+
+    if row and row[0]:
+        last_price = row[0] if isinstance(row[0], date) else row[0].date()
+        first_price = row[1] if isinstance(row[1], date) else row[1].date()
+
+        # If existing prices don't reach back to desired_start, do a full re-fetch
+        # (yfinance upserts are idempotent so re-downloading existing rows is harmless)
+        if first_price > desired_start + timedelta(days=7):
+            return desired_start, today
+
+        # History is complete — just fill forward from the last known date
+        return last_price, today
+
+    return desired_start, today
 
 
 # ---------------------------------------------------------------------------
@@ -477,3 +493,179 @@ def _finish_refresh_log(conn, log_id: int, count: int, status: str) -> None:
         "UPDATE refresh_log SET finished_at = current_timestamp, assets_updated = ?, status = ? WHERE id = ?",
         [count, status, log_id],
     )
+
+
+# ---------------------------------------------------------------------------
+# Asset lookup (ISIN → ticker resolution via OpenFIGI + yfinance metadata)
+# ---------------------------------------------------------------------------
+
+_OPENFIGI_EXCH_TO_SUFFIX: dict[str, str] = {
+    "GY": ".DE",
+    "NA": ".AS",
+    "SM": ".MC",
+    "LN": ".L",
+    "FP": ".PA",
+    "SW": ".SW",
+    "SS": ".ST",
+}
+
+_ISIN_COUNTRY_FUND: set[str] = {"ES", "FR", "LU", "IE"}  # likely mutual fund domiciles
+
+
+def lookup_asset(q: str) -> dict:
+    """
+    Resolve a ticker or ISIN to enriched asset metadata.
+    Returns a dict with keys: found, ticker, isin, name, currency, type, image_url.
+    """
+    q = q.strip().upper()
+    if re.match(r"^[A-Z]{2}[A-Z0-9]{10}$", q):
+        return _lookup_by_isin(q)
+    return _lookup_by_ticker(q)
+
+
+def _lookup_by_isin(isin: str) -> dict:
+    isin_country = isin[:2]
+
+    # Spanish funds: use ISIN as ticker (investpy/mstarpy look up by ISIN anyway)
+    if isin_country == "ES":
+        name = _fund_name_from_mstar(isin)
+        return {
+            "found": name is not None,
+            "ticker": isin,
+            "isin": isin,
+            "name": name or isin,
+            "currency": "EUR",
+            "type": "fund",
+            "image_url": None,
+        }
+
+    # For other ISINs, use OpenFIGI to get exchange ticker
+    yf_ticker, asset_type = _openfigi_resolve(isin)
+
+    if yf_ticker:
+        meta = _yf_full_meta(yf_ticker)
+        return {
+            "found": True,
+            "ticker": yf_ticker,
+            "isin": isin,
+            "name": meta["name"],
+            "currency": meta["currency"],
+            "type": asset_type or meta["type"],
+            "image_url": meta["image_url"],
+        }
+
+    # Fallback: return minimal info so user can fill manually
+    is_likely_fund = isin_country in _ISIN_COUNTRY_FUND
+    return {
+        "found": False,
+        "ticker": isin,
+        "isin": isin,
+        "name": isin,
+        "currency": "EUR",
+        "type": "fund" if is_likely_fund else "stock",
+        "image_url": None,
+    }
+
+
+def _lookup_by_ticker(ticker: str) -> dict:
+    meta = _yf_full_meta(ticker)
+    # Try to fetch ISIN (separate yfinance property — may be slow/unavailable)
+    isin: Optional[str] = None
+    try:
+        raw_isin = yf.Ticker(ticker).isin
+        if raw_isin and isinstance(raw_isin, str) and re.match(r"^[A-Z]{2}[A-Z0-9]{10}$", raw_isin):
+            isin = raw_isin
+    except Exception:
+        pass
+
+    found = meta["name"] != ticker
+    return {
+        "found": found,
+        "ticker": ticker,
+        "isin": isin,
+        "name": meta["name"],
+        "currency": meta["currency"],
+        "type": meta["type"],
+        "image_url": meta["image_url"],
+    }
+
+
+def _yf_full_meta(ticker: str) -> dict:
+    """Fetch name, currency, type, and image_url from yfinance in one call."""
+    try:
+        info = yf.Ticker(ticker).info
+        name = info.get("longName") or info.get("shortName") or ticker
+        currency = (info.get("currency") or "EUR").upper()
+        image_url = _resolve_logo(info)
+        qt = info.get("quoteType", "").upper()
+        if qt == "ETF":
+            asset_type = "etf"
+        elif qt in ("MUTUALFUND", "FUND"):
+            asset_type = "fund"
+        else:
+            asset_type = "stock"
+        return {"name": name, "currency": currency, "type": asset_type, "image_url": image_url}
+    except Exception as e:
+        logger.warning("_yf_full_meta failed for %s: %s", ticker, e)
+        return {"name": ticker, "currency": "EUR", "type": "stock", "image_url": None}
+
+
+def _openfigi_resolve(isin: str) -> tuple[Optional[str], Optional[str]]:
+    """
+    Call OpenFIGI to map ISIN → (yfinance_ticker, asset_type).
+    Returns (None, None) on failure.
+    """
+    import json
+    import urllib.request
+
+    try:
+        payload = json.dumps([{"idType": "ID_ISIN", "idValue": isin}]).encode()
+        req = urllib.request.Request(
+            "https://api.openfigi.com/v3/mapping",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            results = json.loads(resp.read())
+
+        if not results or "data" not in results[0] or not results[0]["data"]:
+            return None, None
+
+        # Skip derivatives
+        candidates = [
+            r for r in results[0]["data"]
+            if r.get("securityType", "") not in ("Option", "Future", "Right", "Warrant")
+        ]
+        if not candidates:
+            candidates = results[0]["data"]
+
+        best = candidates[0]
+        exch = best.get("exchCode", "")
+        raw_ticker = best.get("ticker", "")
+        sec_type = best.get("securityType2", "").lower()
+
+        if "etf" in sec_type or "exchange traded" in sec_type:
+            asset_type: Optional[str] = "etf"
+        elif "mutual" in sec_type or "fund" in sec_type:
+            asset_type = "fund"
+        else:
+            asset_type = "stock"
+
+        suffix = _OPENFIGI_EXCH_TO_SUFFIX.get(exch, "")
+        yf_ticker = raw_ticker + suffix if raw_ticker else None
+        return yf_ticker, asset_type
+    except Exception as e:
+        logger.debug("OpenFIGI lookup failed for %s: %s", isin, e)
+        return None, None
+
+
+def _fund_name_from_mstar(isin: str) -> Optional[str]:
+    """Try to get a fund's display name from Morningstar via mstarpy."""
+    try:
+        import mstarpy
+        fund = mstarpy.Fund(term=isin, country="esp")
+        name = getattr(fund, "name", None)
+        return name if name and name != isin else None
+    except Exception:
+        return None

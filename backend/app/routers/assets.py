@@ -3,6 +3,7 @@ import re
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 from app.database import get_db
 from app.models.asset import AssetCreate, AssetOut, AssetUpdate
 from app.services.price_fetcher import fetch_asset_metadata
@@ -13,11 +14,11 @@ router = APIRouter(prefix="/api/assets", tags=["assets"])
 
 _ASSET_COLS = "id, name, ticker, type, currency, market_id, image_url, manual_price, isin, created_at"
 
-def _row_to_out(r) -> AssetOut:
+def _row_to_out(r, in_portfolio: bool = False) -> AssetOut:
     return AssetOut(
         id=r[0], name=r[1], ticker=r[2], type=r[3], currency=r[4],
         market_id=r[5], image_url=r[6], manual_price=bool(r[7]),
-        isin=r[8], created_at=r[9],
+        isin=r[8], created_at=r[9], in_portfolio=in_portfolio,
     )
 
 
@@ -89,6 +90,16 @@ def asset_metadata(ticker: str):
     return fetch_asset_metadata(ticker)
 
 
+@router.get("/lookup")
+def lookup_asset(q: str):
+    """Resolve an ISIN or ticker to enriched asset metadata for the creation preview."""
+    from app.services.price_fetcher import lookup_asset as _lookup
+    result = _lookup(q)
+    conn = get_db()
+    result["market_id"] = _detect_market_id(conn, result["ticker"], result.get("isin"), result["type"])
+    return result
+
+
 @router.get("/{asset_id}/history")
 def asset_price_history(asset_id: int, period: str = "1y"):
     """Return price history for a single asset filtered by period."""
@@ -128,8 +139,21 @@ def delete_asset(asset_id: int):
 @router.get("", response_model=list[AssetOut])
 def list_assets():
     conn = get_db()
-    rows = conn.execute(f"SELECT {_ASSET_COLS} FROM assets ORDER BY name").fetchall()
-    return [_row_to_out(r) for r in rows]
+    rows = conn.execute(
+        f"""
+        SELECT {_ASSET_COLS},
+               COALESCE(h.net_shares, 0) > 0 AS in_portfolio
+        FROM assets a
+        LEFT JOIN (
+            SELECT asset_id,
+                   SUM(CASE WHEN type = 'buy' THEN shares ELSE -shares END) AS net_shares
+            FROM transactions
+            GROUP BY asset_id
+        ) h ON h.asset_id = a.id
+        ORDER BY a.name
+        """
+    ).fetchall()
+    return [_row_to_out(r, in_portfolio=bool(r[10])) for r in rows]
 
 
 @router.get("/search", response_model=list[AssetOut])
@@ -241,3 +265,39 @@ def set_manual_price(asset_id: int, price: float, price_date: str, currency: str
         [asset_id, parsed_date, price, currency.upper(), price_eur],
     )
     return {"ok": True, "date": str(parsed_date), "price": price, "price_eur": price_eur}
+
+
+class _PriceImportItem(BaseModel):
+    date: str
+    price: float
+
+
+@router.post("/{asset_id}/prices/import")
+def import_prices(asset_id: int, body: list[_PriceImportItem]):
+    """Batch upsert prices for a manual-price asset (CSV-style import)."""
+    from dateutil.parser import parse as _parse_date
+    conn = get_db()
+    row = conn.execute("SELECT id, currency FROM assets WHERE id = ?", [asset_id]).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    currency = row[1]
+
+    from app.services.currency import get_rate_to_eur
+    inserted, errors = 0, []
+    for item in body:
+        try:
+            d = _parse_date(item.date).date()
+            try:
+                price_eur = item.price * get_rate_to_eur(conn, currency, d)
+            except ValueError:
+                price_eur = item.price
+            conn.execute(
+                """INSERT INTO prices VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT (asset_id, date) DO UPDATE SET
+                       price = excluded.price, currency = excluded.currency, price_eur = excluded.price_eur""",
+                [asset_id, d, item.price, currency, price_eur],
+            )
+            inserted += 1
+        except Exception as exc:
+            errors.append({"date": item.date, "error": str(exc)})
+    return {"inserted": inserted, "errors": errors}
