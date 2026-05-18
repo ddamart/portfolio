@@ -18,6 +18,7 @@ export interface Asset {
   manual_price: boolean
   isin: string | null
   created_at: string
+  in_portfolio: boolean
 }
 
 export interface Transaction {
@@ -26,6 +27,7 @@ export interface Transaction {
   asset_name: string
   asset_ticker: string
   asset_type: string
+  asset_image_url: string | null
   type: 'buy' | 'sell'
   broker: string
   shares: number
@@ -70,6 +72,7 @@ export interface HoldingRow {
   manual_price: boolean
   total_shares: number
   avg_buy_price_eur: number
+  avg_buy_price: number
   // null when no price data has been loaded yet for this asset
   current_price: number | null
   current_price_eur: number | null
@@ -88,11 +91,15 @@ export interface PortfolioSummary {
   total_pnl_eur: number
   total_pnl_pct: number
   last_updated: string | null
+  realized_pnl_eur: number
+  realized_pnl_pct: number
+  total_invested_ever_eur: number
 }
 
 export interface ChartPoint {
   date: string
   value_eur: number
+  invested_eur?: number
 }
 
 export interface PriceStatus {
@@ -115,6 +122,17 @@ export interface AssetMeta {
   image_url: string | null
 }
 
+export interface AssetLookup {
+  found: boolean
+  ticker: string
+  isin: string | null
+  name: string
+  currency: string
+  type: 'stock' | 'etf' | 'fund'
+  image_url: string | null
+  market_id: number | null
+}
+
 export interface AssetPricePoint {
   date: string
   price: number
@@ -131,8 +149,11 @@ export const assetsApi = {
   delete: (id: number) => api.delete(`/assets/${id}`),
   setManualPrice: (id: number, price: number, date: string, currency: string) =>
     api.put(`/assets/${id}/price`, null, { params: { price, price_date: date, currency } }).then(r => r.data),
+  importPrices: (id: number, rows: { date: string; price: number }[]) =>
+    api.post<{ inserted: number; errors: { date: string; error: string }[] }>(`/assets/${id}/prices/import`, rows).then(r => r.data),
   markets: () => api.get<Market[]>('/assets/markets').then(r => r.data),
   metadata: (ticker: string) => api.get<AssetMeta>(`/assets/metadata?ticker=${encodeURIComponent(ticker)}`).then(r => r.data),
+  lookup: (q: string) => api.get<AssetLookup>(`/assets/lookup?q=${encodeURIComponent(q)}`).then(r => r.data),
   history: (id: number, period: string) =>
     api.get<AssetPricePoint[]>(`/assets/${id}/history?period=${period}`).then(r => r.data),
 }

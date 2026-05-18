@@ -10,7 +10,8 @@ import { useEffect, useState } from 'react'
 import type { HoldingRow } from '../api/client'
 import { portfolioApi } from '../api/client'
 import { useRefresh } from '../contexts/RefreshContext'
-import { formatEur, formatNumber, formatPct, pnlClass } from '../utils/format'
+import { formatEur, formatNumber, formatPct, pnlClass, pnlClassMuted } from '../utils/format'
+import { AssetLogo } from './AssetLogo'
 import { ManualPriceModal } from './ManualPriceModal'
 
 const col = createColumnHelper<HoldingRow>()
@@ -27,14 +28,7 @@ const columns = [
     header: 'Activo',
     cell: info => (
       <div className="flex items-center gap-2">
-        {info.row.original.image_url && (
-          <img
-            src={info.row.original.image_url}
-            alt=""
-            className="w-6 h-6 rounded-full object-contain"
-            onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
-          />
-        )}
+        <AssetLogo asset={info.row.original} className="w-7 h-7" />
         <div>
           <div className="flex items-center gap-1">
             <span className="font-medium text-gray-900 dark:text-white">{info.getValue()}</span>
@@ -65,42 +59,115 @@ const columns = [
     },
   }),
   col.accessor('total_shares', {
-    header: 'Participaciones',
-    cell: info => formatNumber(info.getValue()),
+    header: 'Cantidad',
+    cell: info => (
+      <span>{formatNumber(info.getValue())} <span className="text-gray-400 text-xs">{info.row.original.ticker}</span></span>
+    ),
   }),
   col.accessor('avg_buy_price_eur', {
-    header: 'P. Medio €',
-    cell: info => formatEur(info.getValue()),
+    header: 'P. Medio',
+    cell: info => {
+      const row = info.row.original
+      const isEur = row.currency === 'EUR'
+      return (
+        <div>
+          <div>{formatNumber(row.avg_buy_price, 4)} {row.currency}</div>
+          {!isEur && <div className="text-xs text-gray-400">{formatEur(info.getValue())}</div>}
+        </div>
+      )
+    },
   }),
   col.accessor('current_price_eur', {
-    header: 'P. Actual €',
+    header: 'P. Actual',
     cell: info => {
-      const v = info.getValue()
-      if (v == null) return <span className="text-amber-500 text-xs" title="Sin datos de precio. Actualiza el precio desde Activos.">Sin precio</span>
-      return <span>{formatEur(v)}</span>
+      const row = info.row.original
+      if (row.current_price == null) return <span className="text-amber-500 text-xs" title="Sin datos de precio. Actualiza el precio desde Activos.">Sin precio</span>
+      const isEur = row.currency === 'EUR'
+      return (
+        <div>
+          <div>{formatNumber(row.current_price, 4)} {row.currency}</div>
+          {!isEur && info.getValue() != null && <div className="text-xs text-gray-400">{formatEur(info.getValue()!)}</div>}
+        </div>
+      )
+    },
+  }),
+  col.accessor('avg_buy_price_eur', {
+    id: 'total_invested',
+    header: 'Invertido',
+    cell: info => {
+      const row = info.row.original
+      const isEur = row.currency === 'EUR'
+      const investedEur = row.total_shares * row.avg_buy_price_eur
+      const investedNative = row.total_shares * row.avg_buy_price
+      return (
+        <div>
+          <div className="font-medium">{formatEur(investedEur)}</div>
+          {!isEur && (
+            <div className="text-xs text-gray-400">{formatNumber(investedNative, 2)} {row.currency}</div>
+          )}
+        </div>
+      )
     },
   }),
   col.accessor('value_eur', {
-    header: 'Valor (€)',
+    header: 'Valor (€) ↓',
     cell: info => {
-      const v = info.getValue()
-      return <span className="font-medium">{v != null ? formatEur(v) : '—'}</span>
+      const row = info.row.original
+      const eur = info.getValue()
+      const isEur = row.currency === 'EUR'
+      const valueCcy = row.current_price != null ? row.total_shares * row.current_price : null
+      return (
+        <div>
+          <div className="font-medium">{eur != null ? formatEur(eur) : '—'}</div>
+          {!isEur && valueCcy != null && (
+            <div className="text-xs text-gray-400">{formatNumber(valueCcy, 2)} {row.currency}</div>
+          )}
+        </div>
+      )
     },
   }),
   col.accessor('pnl_eur', {
-    header: 'G/P (€)',
+    header: 'G/P',
     cell: info => {
-      const v = info.getValue()
-      if (v == null) return <span className="text-gray-400">—</span>
-      return <span className={pnlClass(v)}>{formatEur(v)}</span>
+      const row = info.row.original
+      const eur = info.getValue()
+      const isEur = row.currency === 'EUR'
+      const pnlNative = row.current_price != null
+        ? row.total_shares * (row.current_price - row.avg_buy_price)
+        : null
+      if (eur == null) return <span className="text-gray-400">—</span>
+      return (
+        <div>
+          <div className={pnlClass(eur)}>{formatEur(eur)}</div>
+          {!isEur && pnlNative != null && (
+            <div className={`text-xs ${pnlClassMuted(pnlNative)}`}>
+              {pnlNative >= 0 ? '+' : ''}{formatNumber(pnlNative, 2)} {row.currency}
+            </div>
+          )}
+        </div>
+      )
     },
   }),
   col.accessor('gain_pct', {
     header: 'G/P %',
     cell: info => {
-      const v = info.getValue()
-      if (v == null) return <span className="text-gray-400">—</span>
-      return <span className={pnlClass(v)}>{formatPct(v)}</span>
+      const row = info.row.original
+      const pctEur = info.getValue()
+      const isEur = row.currency === 'EUR'
+      const pctNative = row.current_price != null && row.avg_buy_price > 0
+        ? (row.current_price / row.avg_buy_price - 1) * 100
+        : null
+      if (pctEur == null) return <span className="text-gray-400">—</span>
+      return (
+        <div>
+          <div className={pnlClass(pctEur)}>{formatPct(pctEur)}</div>
+          {!isEur && pctNative != null && (
+            <div className={`text-xs ${pnlClassMuted(pctNative)}`} title="En moneda local (sin efecto divisa)">
+              {formatPct(pctNative)} {row.currency}
+            </div>
+          )}
+        </div>
+      )
     },
   }),
   col.accessor('daily_change_pct', {
@@ -127,7 +194,7 @@ const columns = [
   }),
 ]
 
-export function PortfolioTable({ period }: { period: string }) {
+export function PortfolioTable({ period, dateFrom, dateTo }: { period: string; dateFrom?: string; dateTo?: string }) {
   const [holdings, setHoldings] = useState<HoldingRow[]>([])
   const [loading, setLoading] = useState(true)
   const [sorting, setSorting] = useState<SortingState>([{ id: 'value_eur', desc: true }])
@@ -136,13 +203,16 @@ export function PortfolioTable({ period }: { period: string }) {
 
   const load = () => {
     setLoading(true)
-    portfolioApi.holdings({ period }).then(d => {
+    const params: Record<string, string> = period === 'custom'
+      ? { ...(dateFrom && { date_from: dateFrom }), ...(dateTo && { date_to: dateTo }) }
+      : { period }
+    portfolioApi.holdings(params).then(d => {
       setHoldings(d)
       setLoading(false)
     }).catch(() => setLoading(false))
   }
 
-  useEffect(() => { load() }, [period, lastRefreshAt])
+  useEffect(() => { load() }, [period, dateFrom, dateTo, lastRefreshAt])
 
   const table = useReactTable({
     data: holdings,

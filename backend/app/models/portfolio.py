@@ -9,6 +9,10 @@ class PortfolioSummary(BaseModel):
     total_pnl_eur: float
     total_pnl_pct: float
     last_updated: Optional[date]
+    # Realized P&L from closed / partially-closed positions (AVCO running method)
+    realized_pnl_eur: float = 0.0
+    realized_pnl_pct: float = 0.0
+    total_invested_ever_eur: float = 0.0
 
 
 class HoldingRow(BaseModel):
@@ -22,6 +26,7 @@ class HoldingRow(BaseModel):
     manual_price: bool
     total_shares: float
     avg_buy_price_eur: float
+    avg_buy_price: float
     # These are None when no price data has been loaded yet for the asset
     current_price: Optional[float]
     current_price_eur: Optional[float]
@@ -37,6 +42,7 @@ class HoldingRow(BaseModel):
 class ChartPoint(BaseModel):
     date: date
     value_eur: float
+    invested_eur: Optional[float] = None
 
 
 class PriceStatusAsset(BaseModel):

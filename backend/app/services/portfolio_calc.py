@@ -2,6 +2,7 @@
 Core DuckDB analytical queries for portfolio metrics.
 All calculations are dynamic — no stored snapshots.
 """
+import bisect
 from datetime import date, timedelta
 from typing import Optional
 
@@ -62,6 +63,8 @@ def get_holdings(
             SUM(CASE WHEN t.type='buy' THEN t.shares ELSE -t.shares END) AS total_shares,
             SUM(CASE WHEN t.type='buy' THEN t.shares * t.price_eur ELSE 0 END) /
                 NULLIF(SUM(CASE WHEN t.type='buy' THEN t.shares ELSE 0 END), 0) AS avg_buy_price_eur,
+            SUM(CASE WHEN t.type='buy' THEN t.shares * t.price ELSE 0 END) /
+                NULLIF(SUM(CASE WHEN t.type='buy' THEN t.shares ELSE 0 END), 0) AS avg_buy_price,
             STRING_AGG(DISTINCT t.broker, ', ' ORDER BY t.broker) AS broker
         FROM transactions t
         WHERE 1=1 {tx_date_filter} {broker_filter}
@@ -100,6 +103,7 @@ def get_holdings(
         h.broker,
         h.total_shares,
         h.avg_buy_price_eur,
+        h.avg_buy_price,
         lp.price                                                          AS current_price,
         lp.price_eur                                                      AS current_price_eur,
         h.total_shares * lp.price_eur                                    AS value_eur,
@@ -138,18 +142,62 @@ def get_holdings(
                 broker=row[7],
                 total_shares=float(row[8]),
                 avg_buy_price_eur=float(row[9]),
-                current_price=_f(row[10]),
-                current_price_eur=_f(row[11]),
-                value_eur=_f(row[12]),
-                value_ccy=_f(row[13]),
-                pnl_eur=_f(row[14]),
-                pnl_ccy=_f(row[15]),
-                gain_pct=_f(row[16]),
-                daily_change_pct=_f(row[17]),
-                allocation_pct=float(row[18]),
+                avg_buy_price=float(row[10]),
+                current_price=_f(row[11]),
+                current_price_eur=_f(row[12]),
+                value_eur=_f(row[13]),
+                value_ccy=_f(row[14]),
+                pnl_eur=_f(row[15]),
+                pnl_ccy=_f(row[16]),
+                gain_pct=_f(row[17]),
+                daily_change_pct=_f(row[18]),
+                allocation_pct=float(row[19]),
             )
         )
     return result
+
+
+def get_realized_pnl(conn: duckdb.DuckDBPyConnection) -> dict:
+    """
+    Compute realized P&L using the running Average Cost (AVCO) method.
+    Processes transactions chronologically per asset; on each sell the gain is
+    shares_sold × (sell_price_eur − avg_cost_eur_at_that_moment).
+    """
+    rows = conn.execute("""
+        SELECT asset_id, type, shares, price_eur
+        FROM transactions
+        ORDER BY asset_id, date, id
+    """).fetchall()
+
+    avg_costs: dict[int, float] = {}
+    shares_held: dict[int, float] = {}
+    realized_pnl = 0.0
+    cost_of_sold = 0.0
+    total_invested_ever = 0.0
+
+    for asset_id, tx_type, shares, price_eur in rows:
+        shares = float(shares)
+        price_eur = float(price_eur)
+        cur_shares = shares_held.get(asset_id, 0.0)
+        cur_avg = avg_costs.get(asset_id, 0.0)
+
+        if tx_type == "buy":
+            total_shares = cur_shares + shares
+            avg_costs[asset_id] = (cur_shares * cur_avg + shares * price_eur) / total_shares
+            shares_held[asset_id] = total_shares
+            total_invested_ever += shares * price_eur
+        else:
+            gain = shares * (price_eur - cur_avg)
+            realized_pnl += gain
+            cost_of_sold += shares * cur_avg
+            shares_held[asset_id] = max(cur_shares - shares, 0.0)
+
+    realized_pct = (realized_pnl / cost_of_sold * 100) if cost_of_sold > 0 else 0.0
+    return {
+        "realized_pnl_eur": realized_pnl,
+        "realized_pnl_pct": realized_pct,
+        "total_invested_ever_eur": total_invested_ever,
+    }
 
 
 def get_summary(conn: duckdb.DuckDBPyConnection) -> PortfolioSummary:
@@ -184,6 +232,8 @@ def get_summary(conn: duckdb.DuckDBPyConnection) -> PortfolioSummary:
     FROM joined
     """).fetchone()
 
+    realized = get_realized_pnl(conn)
+
     # fetchone() returns None if the inner query has zero rows (no prices loaded yet)
     if row is None or row[0] is None:
         return PortfolioSummary(
@@ -192,6 +242,7 @@ def get_summary(conn: duckdb.DuckDBPyConnection) -> PortfolioSummary:
             total_pnl_eur=0.0,
             total_pnl_pct=0.0,
             last_updated=None,
+            **realized,
         )
 
     total_value = float(row[0])
@@ -205,7 +256,54 @@ def get_summary(conn: duckdb.DuckDBPyConnection) -> PortfolioSummary:
         total_pnl_eur=pnl,
         total_pnl_pct=pnl_pct,
         last_updated=row[3],
+        **realized,
     )
+
+
+def _build_invested_step_series(conn: duckdb.DuckDBPyConnection) -> tuple[list[date], list[float]]:
+    """
+    Return (dates, values) sorted ascending where each value is the remaining
+    cost basis AFTER all transactions on that date, using the running AVCO method.
+
+    "Invested" = cost of shares still held = total_buy_cost − (sold_shares × avg_cost_at_sell).
+    This is consistent with get_realized_pnl and can never go negative.
+    """
+    rows = conn.execute("""
+        SELECT asset_id, type, shares, price_eur, date
+        FROM transactions
+        ORDER BY date, id
+    """).fetchall()
+
+    def _to_date(v) -> date:
+        return v if isinstance(v, date) else v.date()
+
+    avg_costs: dict[int, float] = {}
+    shares_held: dict[int, float] = {}
+    cost_basis = 0.0
+    step_dates: list[date] = []
+    step_values: list[float] = []
+
+    i = 0
+    while i < len(rows):
+        day = _to_date(rows[i][4])
+        while i < len(rows) and _to_date(rows[i][4]) == day:
+            asset_id, tx_type, shares, price_eur, _ = rows[i]
+            shares, price_eur = float(shares), float(price_eur)
+            cur = shares_held.get(asset_id, 0.0)
+            avg = avg_costs.get(asset_id, 0.0)
+            if tx_type == "buy":
+                new_total = cur + shares
+                avg_costs[asset_id] = (cur * avg + shares * price_eur) / new_total
+                shares_held[asset_id] = new_total
+                cost_basis += shares * price_eur
+            else:
+                cost_basis = max(cost_basis - shares * avg, 0.0)
+                shares_held[asset_id] = max(cur - shares, 0.0)
+            i += 1
+        step_dates.append(day)
+        step_values.append(cost_basis)
+
+    return step_dates, step_values
 
 
 def get_chart_data(
@@ -217,7 +315,6 @@ def get_chart_data(
     if period and not date_from:
         date_from, date_to = _period_to_date_range(period)
 
-    # Build date range filter (applied inside date_spine CTE against bare `prices` table)
     date_filter = ""
     params: list = []
     if date_from:
@@ -227,9 +324,6 @@ def get_chart_data(
         date_filter += " AND date <= ?"
         params.append(date_to)
 
-    # For each day, calculate the portfolio value based on holdings at that time
-    # Uses ASOF-style logic: for each (asset, date) we take holdings as of that date
-    # and multiply by the price on that date (using last known price via window function)
     query = f"""
     WITH date_spine AS (
         SELECT DISTINCT date FROM prices
@@ -273,4 +367,18 @@ def get_chart_data(
     """
 
     rows = conn.execute(query, params).fetchall()
-    return [ChartPoint(date=row[0], value_eur=float(row[1])) for row in rows]
+
+    # Build invested step series (AVCO cost basis) and forward-fill onto chart dates
+    step_dates, step_values = _build_invested_step_series(conn)
+
+    def _invested_at(chart_date) -> Optional[float]:
+        if not step_dates:
+            return None
+        d = chart_date if isinstance(chart_date, date) else chart_date.date()
+        idx = bisect.bisect_right(step_dates, d) - 1
+        return step_values[idx] if idx >= 0 else None
+
+    return [
+        ChartPoint(date=row[0], value_eur=float(row[1]), invested_eur=_invested_at(row[0]))
+        for row in rows
+    ]
