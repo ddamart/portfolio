@@ -10,10 +10,16 @@ import { useEffect, useState } from 'react'
 import type { HoldingRow } from '../api/client'
 import { portfolioApi } from '../api/client'
 import { formatEur, formatNumber, formatPct, pnlClass } from '../utils/format'
-import { PeriodFilter } from './PeriodFilter'
 import { ManualPriceModal } from './ManualPriceModal'
 
 const col = createColumnHelper<HoldingRow>()
+
+const BROKER_LABEL: Record<string, string> = {
+  openbank: 'Openbank',
+  trade_republic: 'Trade Republic',
+  revolut: 'Revolut',
+  degiro: 'Degiro',
+}
 
 const columns = [
   col.accessor('name', {
@@ -47,28 +53,30 @@ const columns = [
       </span>
     ),
   }),
+  col.accessor('broker', {
+    header: 'Broker',
+    cell: info => {
+      const v = info.getValue()
+      if (!v) return <span className="text-gray-400">—</span>
+      const labels = v.split(', ').map(b => BROKER_LABEL[b] ?? b).join(', ')
+      return <span className="text-xs text-gray-500">{labels}</span>
+    },
+  }),
   col.accessor('total_shares', {
     header: 'Participaciones',
     cell: info => formatNumber(info.getValue()),
   }),
   col.accessor('avg_buy_price_eur', {
-    header: 'P. Medio Compra',
+    header: 'P. Medio €',
     cell: info => formatEur(info.getValue()),
   }),
   col.accessor('current_price_eur', {
-    header: 'P. Actual',
+    header: 'P. Actual €',
     cell: info => formatEur(info.getValue()),
   }),
   col.accessor('value_eur', {
     header: 'Valor (€)',
     cell: info => <span className="font-medium">{formatEur(info.getValue())}</span>,
-  }),
-  col.accessor('value_ccy', {
-    header: 'Valor (divisa)',
-    cell: info => {
-      const row = info.row.original
-      return `${formatNumber(info.getValue(), 2)} ${row.currency}`
-    },
   }),
   col.accessor('pnl_eur', {
     header: 'G/P (€)',
@@ -98,7 +106,7 @@ const columns = [
     header: 'Asignación',
     cell: info => (
       <div className="flex items-center gap-2">
-        <div className="w-20 bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
+        <div className="w-16 bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
           <div
             className="bg-blue-500 h-1.5 rounded-full"
             style={{ width: `${Math.min(info.getValue(), 100)}%` }}
@@ -110,8 +118,7 @@ const columns = [
   }),
 ]
 
-export function PortfolioTable() {
-  const [period, setPeriod] = useState('all')
+export function PortfolioTable({ period }: { period: string }) {
   const [holdings, setHoldings] = useState<HoldingRow[]>([])
   const [loading, setLoading] = useState(true)
   const [sorting, setSorting] = useState<SortingState>([{ id: 'value_eur', desc: true }])
@@ -138,9 +145,8 @@ export function PortfolioTable() {
 
   return (
     <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
-      <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
+      <div className="p-4 border-b border-gray-200 dark:border-gray-700">
         <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Composición</h2>
-        <PeriodFilter value={period} onChange={setPeriod} />
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">

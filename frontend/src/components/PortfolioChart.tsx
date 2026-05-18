@@ -6,10 +6,8 @@ import {
 import type { ChartPoint } from '../api/client'
 import { portfolioApi } from '../api/client'
 import { formatEur } from '../utils/format'
-import { PeriodFilter } from './PeriodFilter'
 
-export function PortfolioChart() {
-  const [period, setPeriod] = useState('ytd')
+export function PortfolioChart({ period }: { period: string }) {
   const [data, setData] = useState<ChartPoint[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -29,9 +27,8 @@ export function PortfolioChart() {
 
   return (
     <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-6">
-      <div className="flex items-center justify-between mb-4">
+      <div className="mb-4">
         <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Evolución del Portfolio</h2>
-        <PeriodFilter value={period} onChange={setPeriod} />
       </div>
       {loading ? (
         <div className="h-64 flex items-center justify-center text-gray-400">Cargando...</div>

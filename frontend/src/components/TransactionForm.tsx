@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import toast from 'react-hot-toast'
-import type { Asset, Market, Transaction, TransactionCreate } from '../api/client'
+import type { Asset, AssetMeta, Market, Transaction, TransactionCreate } from '../api/client'
 import { assetsApi, pricesApi, transactionsApi } from '../api/client'
 
 const BROKERS = [
@@ -57,6 +57,8 @@ export function TransactionForm({ existing, onClose, onSaved }: Props) {
   })
   const [markets, setMarkets] = useState<Market[]>([])
   const [creatingAsset, setCreatingAsset] = useState(false)
+  const [tickerMeta, setTickerMeta] = useState<AssetMeta | null>(null)
+  const [fetchingMeta, setFetchingMeta] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
 
   // --- transaction fields ---
@@ -93,6 +95,31 @@ export function TransactionForm({ existing, onClose, onSaved }: Props) {
     if (selectedAsset) return  // don't search when an asset is already selected
     assetsApi.search(assetQuery).then(setAssetResults).catch(() => {})
   }, [assetQuery, selectedAsset])
+
+  // Fetch ticker metadata (name, currency, logo) when user types a ticker in the new-asset form
+  useEffect(() => {
+    const t = newAsset.ticker.trim()
+    if (!showNewAsset || !t || t.length < 1 || newAsset.manual_price) {
+      setTickerMeta(null)
+      return
+    }
+    setFetchingMeta(true)
+    const timer = setTimeout(() => {
+      assetsApi.metadata(t)
+        .then(meta => {
+          setTickerMeta(meta)
+          // Auto-fill name and currency only if user hasn't typed them manually
+          setNewAsset(d => ({
+            ...d,
+            name: d.name || meta.name,
+            currency: meta.currency || d.currency,
+          }))
+        })
+        .catch(() => setTickerMeta(null))
+        .finally(() => setFetchingMeta(false))
+    }, 600)
+    return () => clearTimeout(timer)
+  }, [newAsset.ticker, showNewAsset, newAsset.manual_price])
 
   // Fetch EUR rate whenever currency or date changes
   useEffect(() => {
@@ -279,9 +306,16 @@ export function TransactionForm({ existing, onClose, onSaved }: Props) {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className={labelCls}>Ticker</label>
-                  <input value={newAsset.ticker}
-                    onChange={e => setNewAsset(d => ({ ...d, ticker: e.target.value.toUpperCase() }))}
-                    className={inputCls} placeholder="AAPL · VWCE.DE · BNP1" />
+                  <div className="flex items-center gap-2">
+                    {tickerMeta?.image_url && (
+                      <img src={tickerMeta.image_url} alt="" className="w-7 h-7 rounded-full object-contain shrink-0"
+                        onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                    )}
+                    <input value={newAsset.ticker}
+                      onChange={e => { setNewAsset(d => ({ ...d, ticker: e.target.value.toUpperCase(), name: '' })); setTickerMeta(null) }}
+                      className={`${inputCls} flex-1`} placeholder="AAPL · VWCE.DE · BNP1" />
+                  </div>
+                  {fetchingMeta && <span className="text-xs text-gray-400 mt-0.5 block">Buscando info…</span>}
                 </div>
                 <div>
                   <label className={labelCls}>ISIN (opcional)</label>
@@ -291,10 +325,10 @@ export function TransactionForm({ existing, onClose, onSaved }: Props) {
                     maxLength={12} />
                 </div>
                 <div className="col-span-2">
-                  <label className={labelCls}>Nombre (opcional)</label>
+                  <label className={labelCls}>Nombre</label>
                   <input value={newAsset.name}
                     onChange={e => setNewAsset(d => ({ ...d, name: e.target.value }))}
-                    className={inputCls} placeholder="Auto si es stock/ETF" />
+                    className={inputCls} placeholder={fetchingMeta ? 'Cargando…' : 'Auto para stocks/ETFs'} />
                 </div>
                 <div>
                   <label className={labelCls}>Tipo</label>

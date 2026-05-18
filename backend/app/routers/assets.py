@@ -80,6 +80,24 @@ def _detect_market_id(
     return _mic_to_id("XNAS")
 
 
+@router.get("/metadata")
+def asset_metadata(ticker: str):
+    """Preview name/currency/image for a ticker without creating the asset."""
+    return fetch_asset_metadata(ticker)
+
+
+@router.delete("/{asset_id}", status_code=204)
+def delete_asset(asset_id: int):
+    conn = get_db()
+    if not conn.execute("SELECT id FROM assets WHERE id = ?", [asset_id]).fetchone():
+        raise HTTPException(status_code=404, detail="Asset not found")
+    has_tx = conn.execute("SELECT COUNT(*) FROM transactions WHERE asset_id = ?", [asset_id]).fetchone()[0]
+    if has_tx:
+        raise HTTPException(status_code=409, detail=f"Cannot delete: asset has {has_tx} transaction(s)")
+    conn.execute("DELETE FROM prices WHERE asset_id = ?", [asset_id])
+    conn.execute("DELETE FROM assets WHERE id = ?", [asset_id])
+
+
 @router.get("", response_model=list[AssetOut])
 def list_assets():
     conn = get_db()

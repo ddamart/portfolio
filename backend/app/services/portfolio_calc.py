@@ -60,7 +60,8 @@ def get_holdings(
             t.asset_id,
             SUM(CASE WHEN t.type='buy' THEN t.shares ELSE -t.shares END) AS total_shares,
             SUM(CASE WHEN t.type='buy' THEN t.shares * t.price_eur ELSE 0 END) /
-                NULLIF(SUM(CASE WHEN t.type='buy' THEN t.shares ELSE 0 END), 0) AS avg_buy_price_eur
+                NULLIF(SUM(CASE WHEN t.type='buy' THEN t.shares ELSE 0 END), 0) AS avg_buy_price_eur,
+            STRING_AGG(DISTINCT t.broker, ', ' ORDER BY t.broker) AS broker
         FROM transactions t
         WHERE 1=1 {tx_date_filter} {broker_filter}
         GROUP BY t.asset_id
@@ -94,6 +95,7 @@ def get_holdings(
         a.currency,
         a.image_url,
         a.manual_price,
+        h.broker,
         h.total_shares,
         h.avg_buy_price_eur,
         lp.price                                                     AS current_price,
@@ -126,20 +128,20 @@ def get_holdings(
                 ticker=row[2],
                 type=row[3],
                 currency=row[4],
-                broker=None,
                 image_url=row[5],
                 manual_price=bool(row[6]),
-                total_shares=float(row[7]),
-                avg_buy_price_eur=float(row[8]),
-                current_price=float(row[9]),
-                current_price_eur=float(row[10]),
-                value_eur=float(row[11]),
-                value_ccy=float(row[12]),
-                pnl_eur=float(row[13]),
-                pnl_ccy=float(row[14]),
-                gain_pct=float(row[15]),
-                daily_change_pct=float(row[16]) if row[16] is not None else None,
-                allocation_pct=float(row[17]),
+                broker=row[7],
+                total_shares=float(row[8]),
+                avg_buy_price_eur=float(row[9]),
+                current_price=float(row[10]),
+                current_price_eur=float(row[11]),
+                value_eur=float(row[12]),
+                value_ccy=float(row[13]),
+                pnl_eur=float(row[14]),
+                pnl_ccy=float(row[15]),
+                gain_pct=float(row[16]),
+                daily_change_pct=float(row[17]) if row[17] is not None else None,
+                allocation_pct=float(row[18]),
             )
         )
     return result

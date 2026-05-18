@@ -2,6 +2,7 @@ import { Component, type ReactNode } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
 import { Navbar } from './components/Navbar'
+import { AssetsPage } from './pages/Assets'
 import { PortfolioPage } from './pages/Portfolio'
 import { TransactionsPage } from './pages/Transactions'
 import { ImportPage } from './pages/Import'
@@ -43,6 +44,7 @@ export default function App() {
             <Route path="/" element={<Navigate to="/portfolio" replace />} />
             <Route path="/portfolio" element={<PortfolioPage />} />
             <Route path="/transactions" element={<TransactionsPage />} />
+            <Route path="/assets" element={<AssetsPage />} />
             <Route path="/import" element={<ImportPage />} />
           </Routes>
         </main>

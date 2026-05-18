@@ -1,10 +1,15 @@
 import { useState } from 'react'
-import type { HoldingRow } from '../api/client'
 import { assetsApi } from '../api/client'
 import toast from 'react-hot-toast'
 
+interface AssetLike {
+  asset_id: number
+  ticker: string
+  currency: string
+}
+
 interface Props {
-  asset: HoldingRow
+  asset: AssetLike
   onClose: () => void
   onSaved: () => void
 }

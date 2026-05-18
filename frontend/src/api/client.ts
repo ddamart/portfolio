@@ -108,13 +108,23 @@ export interface PriceStatus {
 
 // --- API calls ---
 
+export interface AssetMeta {
+  name: string
+  currency: string
+  image_url: string | null
+}
+
 export const assetsApi = {
   list: () => api.get<Asset[]>('/assets').then(r => r.data),
   search: (q: string) => api.get<Asset[]>(`/assets/search?q=${encodeURIComponent(q)}`).then(r => r.data),
   create: (body: Omit<Asset, 'id' | 'created_at' | 'isin'> & { isin?: string | null }) => api.post<Asset>('/assets', body).then(r => r.data),
+  update: (id: number, body: { name?: string; isin?: string | null; market_id?: number | null; manual_price?: boolean; image_url?: string | null }) =>
+    api.put<Asset>(`/assets/${id}`, body).then(r => r.data),
+  delete: (id: number) => api.delete(`/assets/${id}`),
   setManualPrice: (id: number, price: number, date: string, currency: string) =>
     api.put(`/assets/${id}/price`, null, { params: { price, price_date: date, currency } }).then(r => r.data),
   markets: () => api.get<Market[]>('/assets/markets').then(r => r.data),
+  metadata: (ticker: string) => api.get<AssetMeta>(`/assets/metadata?ticker=${encodeURIComponent(ticker)}`).then(r => r.data),
 }
 
 export const transactionsApi = {
