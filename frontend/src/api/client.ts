@@ -40,6 +40,9 @@ export interface Transaction {
   notes: string | null
   created_at: string
   updated_at: string
+  // only populated on sell transactions in list view
+  cost_basis_eur: number | null
+  realized_pnl_eur: number | null
 }
 
 export interface TransactionCreate {

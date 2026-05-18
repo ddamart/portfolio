@@ -17,6 +17,8 @@ def _row_to_out(r) -> TransactionOut:
         price_eur=float(r[10]), currency=r[11], commission=float(r[12]),
         commission_eur=float(r[13]), date=r[14], notes=r[15],
         created_at=r[16], updated_at=r[17],
+        cost_basis_eur=float(r[18]) if len(r) > 18 and r[18] is not None else None,
+        realized_pnl_eur=float(r[19]) if len(r) > 19 and r[19] is not None else None,
     )
 
 
@@ -62,14 +64,34 @@ def list_transactions(
     sort_col = sort_by if sort_by in valid_sort else "date"
     sort_direction = "DESC" if sort_dir.lower() == "desc" else "ASC"
 
+    # AVCO CTE runs on full transaction history (no filter) so date-filtered views
+    # still get the correct running average cost basis for each sell.
     query = f"""
+    WITH avco AS (
+        SELECT
+            id,
+            SUM(CASE WHEN type='buy' THEN shares * price_eur ELSE 0 END) OVER (
+                PARTITION BY asset_id ORDER BY date, id
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            ) /
+            NULLIF(SUM(CASE WHEN type='buy' THEN shares ELSE 0 END) OVER (
+                PARTITION BY asset_id ORDER BY date, id
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            ), 0) AS avco_eur
+        FROM transactions
+    )
     SELECT
         t.id, t.asset_id, a.name, a.ticker, a.type, a.image_url,
         t.type, t.broker, t.shares, t.price, t.price_eur,
         t.currency, t.commission, t.commission_eur,
-        t.date, t.notes, t.created_at, t.updated_at
+        t.date, t.notes, t.created_at, t.updated_at,
+        CASE WHEN t.type = 'sell' THEN av.avco_eur END AS cost_basis_eur,
+        CASE WHEN t.type = 'sell'
+             THEN t.shares * (t.price_eur - av.avco_eur) - t.commission_eur
+        END AS realized_pnl_eur
     FROM transactions t
     JOIN assets a ON a.id = t.asset_id
+    JOIN avco av ON av.id = t.id
     {where}
     ORDER BY t.{sort_col} {sort_direction}
     """

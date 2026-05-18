@@ -10,7 +10,7 @@ import { useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
 import type { Transaction } from '../api/client'
 import { transactionsApi } from '../api/client'
-import { formatEur, formatNumber } from '../utils/format'
+import { formatEur, formatNumber, formatPct, pnlClass } from '../utils/format'
 import { AssetLogo } from './AssetLogo'
 import { PeriodFilter } from './PeriodFilter'
 import { TransactionForm } from './TransactionForm'
@@ -125,7 +125,7 @@ export function TransactionTable() {
     }),
     col.display({
       id: 'cost',
-      header: 'Coste / Com.',
+      header: 'Coste',
       cell: info => {
         const row = info.row.original
         const isEur = row.currency === 'EUR'
@@ -135,11 +135,36 @@ export function TransactionTable() {
           <div>
             <div>{formatEur(costEur)}</div>
             {!isEur && <div className="text-xs text-gray-400">{formatNumber(costLocal, 2)} {row.currency}</div>}
-            {row.commission > 0 && (
-              <div className="text-xs text-gray-400 mt-0.5">
-                + {formatNumber(row.commission, 2)} {row.currency}
-              </div>
+          </div>
+        )
+      },
+    }),
+    col.accessor('commission', {
+      header: 'Comisión',
+      cell: info => info.getValue() > 0
+        ? (
+          <div>
+            <div>{formatNumber(info.getValue(), 2)} {info.row.original.currency}</div>
+            {info.row.original.currency !== 'EUR' && (
+              <div className="text-xs text-gray-400">{formatEur(info.row.original.commission_eur)}</div>
             )}
+          </div>
+        )
+        : <span className="text-gray-400">—</span>,
+    }),
+    col.display({
+      id: 'realized_pnl',
+      header: 'P&L Real.',
+      cell: info => {
+        const row = info.row.original
+        if (row.type !== 'sell' || row.realized_pnl_eur == null || row.cost_basis_eur == null) {
+          return <span className="text-gray-400">—</span>
+        }
+        const gainPct = (row.price_eur / row.cost_basis_eur - 1) * 100
+        return (
+          <div className={pnlClass(row.realized_pnl_eur)}>
+            <div className="font-medium">{formatEur(row.realized_pnl_eur)}</div>
+            <div className="text-xs">{formatPct(gainPct)}</div>
           </div>
         )
       },

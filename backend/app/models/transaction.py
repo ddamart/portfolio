@@ -68,3 +68,6 @@ class TransactionOut(BaseModel):
     notes: Optional[str]
     created_at: datetime.datetime
     updated_at: datetime.datetime
+    # AVCO-based realized P&L — only populated on sell transactions in list view
+    cost_basis_eur: Optional[float] = None
+    realized_pnl_eur: Optional[float] = None
