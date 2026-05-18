@@ -35,16 +35,17 @@ const columns = [
             onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
           />
         )}
-        <span className="font-medium text-gray-900 dark:text-white">{info.getValue()}</span>
-        {info.row.original.manual_price && (
-          <span title="Precio manual" className="text-xs text-amber-500">✎</span>
-        )}
+        <div>
+          <div className="flex items-center gap-1">
+            <span className="font-medium text-gray-900 dark:text-white">{info.getValue()}</span>
+            {info.row.original.manual_price && (
+              <span title="Precio manual" className="text-xs text-amber-500">✎</span>
+            )}
+          </div>
+          <span className="text-xs font-mono text-gray-400">{info.row.original.ticker}</span>
+        </div>
       </div>
     ),
-  }),
-  col.accessor('ticker', {
-    header: 'Símbolo',
-    cell: info => <span className="font-mono text-sm text-gray-500">{info.getValue()}</span>,
   }),
   col.accessor('type', {
     header: 'Tipo',

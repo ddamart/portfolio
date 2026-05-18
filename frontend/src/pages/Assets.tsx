@@ -27,6 +27,24 @@ function EditModal({
     image_url: asset.image_url ?? '',
   })
   const [saving, setSaving] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+
+  const syncMetadata = async () => {
+    setSyncing(true)
+    try {
+      const meta = await assetsApi.metadata(asset.ticker)
+      setDraft(d => ({
+        ...d,
+        name: meta.name,
+        image_url: meta.image_url ?? d.image_url,
+      }))
+      toast.success('Metadatos sincronizados desde yfinance')
+    } catch {
+      toast.error('No se pudieron obtener los metadatos')
+    } finally {
+      setSyncing(false)
+    }
+  }
 
   const save = async () => {
     setSaving(true)
@@ -68,7 +86,17 @@ function EditModal({
 
         <div className="px-5 py-4 space-y-3">
           <div>
-            <label className={labelCls}>Nombre</label>
+            <div className="flex items-center justify-between mb-1">
+              <label className={labelCls} style={{ marginBottom: 0 }}>Nombre</label>
+              <button
+                onClick={syncMetadata}
+                disabled={syncing || asset.type === 'fund'}
+                title={asset.type === 'fund' ? 'No disponible para fondos' : 'Obtener nombre e imagen desde yfinance'}
+                className="text-xs text-blue-500 hover:text-blue-600 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {syncing ? '↻ Sincronizando…' : '↻ Sync desde yfinance'}
+              </button>
+            </div>
             <input value={draft.name} onChange={e => setDraft(d => ({ ...d, name: e.target.value }))}
               className={inputCls} />
           </div>
