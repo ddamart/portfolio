@@ -5,8 +5,9 @@ import {
 } from 'recharts'
 import type { Asset, AssetPricePoint, Transaction } from '../api/client'
 import { assetsApi, transactionsApi } from '../api/client'
-import { formatEur, formatNumber } from '../utils/format'
+import { fmtAxisCcy, formatCcy, formatEur, formatNumber } from '../utils/format'
 import { AssetLogo } from './AssetLogo'
+import { PriceImportModal } from './PriceImportModal'
 
 const PERIODS = [
   { key: '1m', label: '1M' },
@@ -16,15 +17,50 @@ const PERIODS = [
   { key: 'all', label: 'Todo' },
 ]
 
+function Paginator({ page, totalPages, total, onChange }: {
+  page: number; totalPages: number; total: number; onChange: (p: number) => void
+}) {
+  if (totalPages <= 1) return null
+  return (
+    <div className="flex items-center justify-between mt-3 text-xs text-gray-500">
+      <span>{total} registros · página {page + 1} de {totalPages}</span>
+      <div className="flex gap-1">
+        <button
+          onClick={() => onChange(page - 1)}
+          disabled={page === 0}
+          className="px-2 py-1 rounded border border-gray-200 dark:border-gray-700 disabled:opacity-40 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+        >
+          ‹
+        </button>
+        <button
+          onClick={() => onChange(page + 1)}
+          disabled={page >= totalPages - 1}
+          className="px-2 py-1 rounded border border-gray-200 dark:border-gray-700 disabled:opacity-40 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+        >
+          ›
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export function AssetDetailDrawer({ asset, onClose }: { asset: Asset; onClose: () => void }) {
   const [period, setPeriod] = useState('1y')
   const [prices, setPrices] = useState<AssetPricePoint[]>([])
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [loadingPrices, setLoadingPrices] = useState(true)
   const [loadingTx, setLoadingTx] = useState(true)
+  const [tab, setTab] = useState<'operaciones' | 'precios'>('operaciones')
+  const [showImport, setShowImport] = useState(false)
+  const [txPage, setTxPage] = useState(0)
+  const [pricePage, setPricePage] = useState(0)
+
+  const TX_PAGE_SIZE = 10
+  const PRICE_PAGE_SIZE = 20
 
   useEffect(() => {
     setLoadingPrices(true)
+    setPricePage(0)
     assetsApi.history(asset.id, period)
       .then(setPrices)
       .catch(() => setPrices([]))
@@ -41,7 +77,7 @@ export function AssetDetailDrawer({ asset, onClose }: { asset: Asset; onClose: (
 
   // Snap a transaction date to the nearest available price data point.
   // This handles weekends/holidays where there's no price entry.
-  const snapToPrice = (dateStr: string): { date: string; price_eur: number } | null => {
+  const snapToPrice = (dateStr: string): AssetPricePoint | null => {
     if (prices.length === 0) return null
     const exact = prices.find(p => p.date === dateStr)
     if (exact) return exact
@@ -56,8 +92,9 @@ export function AssetDetailDrawer({ asset, onClose }: { asset: Asset; onClose: (
     tx.date <= prices[prices.length - 1].date
   )
 
-  const currentPrice = prices[prices.length - 1]?.price_eur
-  const firstPrice = prices[0]?.price_eur
+  const currency = prices[0]?.currency ?? asset.currency
+  const currentPrice = prices[prices.length - 1]?.price
+  const firstPrice = prices[0]?.price
   const isPositive = currentPrice != null && firstPrice != null ? currentPrice >= firstPrice : true
   const color = isPositive ? '#22c55e' : '#ef4444'
   const changePct =
@@ -87,7 +124,7 @@ export function AssetDetailDrawer({ asset, onClose }: { asset: Asset; onClose: (
               <div className="flex items-center gap-2 mt-0.5">
                 {currentPrice != null && (
                   <span className="text-sm font-semibold text-gray-800 dark:text-gray-100">
-                    {formatEur(currentPrice)}
+                    {formatCcy(currentPrice, currency)}
                   </span>
                 )}
                 {changePct != null && (
@@ -150,11 +187,11 @@ export function AssetDetailDrawer({ asset, onClose }: { asset: Asset; onClose: (
                   />
                   <YAxis
                     tick={{ fontSize: 11, fill: '#9ca3af' }}
-                    tickFormatter={v => v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v.toFixed(2))}
-                    width={58}
+                    tickFormatter={v => fmtAxisCcy(v, currency)}
+                    width={64}
                   />
                   <Tooltip
-                    formatter={(v) => [formatEur(Number(v)), 'Precio']}
+                    formatter={(v) => [formatCcy(Number(v), currency), 'Precio']}
                     labelFormatter={l => `Fecha: ${l}`}
                     contentStyle={{
                       background: '#1f2937',
@@ -166,7 +203,7 @@ export function AssetDetailDrawer({ asset, onClose }: { asset: Asset; onClose: (
                   />
                   <Area
                     type="monotone"
-                    dataKey="price_eur"
+                    dataKey="price"
                     stroke={color}
                     strokeWidth={2}
                     fill={`url(#assetGrad${asset.id})`}
@@ -181,7 +218,7 @@ export function AssetDetailDrawer({ asset, onClose }: { asset: Asset; onClose: (
                       <ReferenceDot
                         key={tx.id}
                         x={snap.date}
-                        y={snap.price_eur}
+                        y={snap.price}
                         r={5}
                         fill={isBuy ? '#22c55e' : '#ef4444'}
                         stroke="white"
@@ -215,71 +252,141 @@ export function AssetDetailDrawer({ asset, onClose }: { asset: Asset; onClose: (
             </div>
           )}
 
-          {/* Transactions table */}
+          {/* Tabs */}
           <div className="px-6 pb-8 mt-2">
-            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">
-              Historial de operaciones ({transactions.length})
-            </h3>
-
-            {loadingTx ? (
-              <p className="text-sm text-gray-400">Cargando…</p>
-            ) : transactions.length === 0 ? (
-              <p className="text-sm text-gray-400">Sin transacciones registradas</p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="border-b border-gray-100 dark:border-gray-700">
-                      {['Fecha', 'Tipo', 'Particip.', 'Precio', 'Total €', 'Comisión', 'Broker'].map(h => (
-                        <th
-                          key={h}
-                          className="py-2 pr-3 text-left font-medium text-gray-400 uppercase tracking-wide whitespace-nowrap"
-                        >
-                          {h}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[...transactions].reverse().map(tx => (
-                      <tr
-                        key={tx.id}
-                        className="border-b border-gray-50 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/60"
-                      >
-                        <td className="py-2 pr-3 text-gray-600 dark:text-gray-400 whitespace-nowrap">{tx.date}</td>
-                        <td className="py-2 pr-3">
-                          <span className={`px-1.5 py-0.5 rounded font-semibold text-[10px] ${
-                            tx.type === 'buy'
-                              ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400'
-                              : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400'
-                          }`}>
-                            {tx.type === 'buy' ? 'COMPRA' : 'VENTA'}
-                          </span>
-                        </td>
-                        <td className="py-2 pr-3 text-gray-700 dark:text-gray-300">
-                          {formatNumber(tx.shares)}
-                        </td>
-                        <td className="py-2 pr-3 text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                          {tx.price.toFixed(4)} {tx.currency}
-                        </td>
-                        <td className="py-2 pr-3 font-medium text-gray-900 dark:text-white whitespace-nowrap">
-                          {formatEur(tx.shares * tx.price_eur)}
-                        </td>
-                        <td className="py-2 pr-3 text-gray-500 whitespace-nowrap">
-                          {tx.commission_eur > 0 ? formatEur(tx.commission_eur) : '—'}
-                        </td>
-                        <td className="py-2 text-gray-500 capitalize whitespace-nowrap">
-                          {tx.broker.replace(/_/g, ' ')}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
+                <button
+                  onClick={() => setTab('operaciones')}
+                  className={`px-3 py-1.5 text-xs rounded-md font-medium transition-colors ${
+                    tab === 'operaciones'
+                      ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
+                      : 'text-gray-500 dark:text-gray-400 hover:text-gray-700'
+                  }`}
+                >
+                  Operaciones ({transactions.length})
+                </button>
+                <button
+                  onClick={() => setTab('precios')}
+                  className={`px-3 py-1.5 text-xs rounded-md font-medium transition-colors ${
+                    tab === 'precios'
+                      ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
+                      : 'text-gray-500 dark:text-gray-400 hover:text-gray-700'
+                  }`}
+                >
+                  Precios ({prices.length})
+                </button>
               </div>
+              {tab === 'precios' && asset.manual_price && (
+                <button
+                  onClick={() => setShowImport(true)}
+                  className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                >
+                  + Importar CSV
+                </button>
+              )}
+            </div>
+
+            {tab === 'operaciones' && (
+              loadingTx ? (
+                <p className="text-sm text-gray-400">Cargando…</p>
+              ) : transactions.length === 0 ? (
+                <p className="text-sm text-gray-400">Sin transacciones registradas</p>
+              ) : (() => {
+                const sorted = [...transactions].reverse()
+                const totalPages = Math.ceil(sorted.length / TX_PAGE_SIZE)
+                const page = sorted.slice(txPage * TX_PAGE_SIZE, (txPage + 1) * TX_PAGE_SIZE)
+                return (
+                  <>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="border-b border-gray-100 dark:border-gray-700">
+                            {['Fecha', 'Tipo', 'Particip.', 'Precio', 'Total €', 'Comisión', 'Broker'].map(h => (
+                              <th key={h} className="py-2 pr-3 text-left font-medium text-gray-400 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {page.map(tx => (
+                            <tr key={tx.id} className="border-b border-gray-50 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/60">
+                              <td className="py-2 pr-3 text-gray-600 dark:text-gray-400 whitespace-nowrap">{tx.date}</td>
+                              <td className="py-2 pr-3">
+                                <span className={`px-1.5 py-0.5 rounded font-semibold text-[10px] ${
+                                  tx.type === 'buy'
+                                    ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400'
+                                    : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400'
+                                }`}>
+                                  {tx.type === 'buy' ? 'COMPRA' : 'VENTA'}
+                                </span>
+                              </td>
+                              <td className="py-2 pr-3 text-gray-700 dark:text-gray-300">{formatNumber(tx.shares)}</td>
+                              <td className="py-2 pr-3 text-gray-700 dark:text-gray-300 whitespace-nowrap">{tx.price.toFixed(4)} {tx.currency}</td>
+                              <td className="py-2 pr-3 font-medium text-gray-900 dark:text-white whitespace-nowrap">{formatEur(tx.shares * tx.price_eur)}</td>
+                              <td className="py-2 pr-3 text-gray-500 whitespace-nowrap">{tx.commission_eur > 0 ? formatEur(tx.commission_eur) : '—'}</td>
+                              <td className="py-2 text-gray-500 capitalize whitespace-nowrap">{tx.broker.replace(/_/g, ' ')}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <Paginator page={txPage} totalPages={totalPages} total={sorted.length} onChange={setTxPage} />
+                  </>
+                )
+              })()
+            )}
+
+            {tab === 'precios' && (
+              loadingPrices ? (
+                <p className="text-sm text-gray-400">Cargando…</p>
+              ) : prices.length === 0 ? (
+                <p className="text-sm text-gray-400">Sin datos de precio para el período seleccionado</p>
+              ) : (() => {
+                const sorted = [...prices].reverse()
+                const totalPages = Math.ceil(sorted.length / PRICE_PAGE_SIZE)
+                const page = sorted.slice(pricePage * PRICE_PAGE_SIZE, (pricePage + 1) * PRICE_PAGE_SIZE)
+                return (
+                  <>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="border-b border-gray-100 dark:border-gray-700">
+                            {['Fecha', `Precio (${prices[0]?.currency ?? asset.currency})`, 'Precio (€)'].map(h => (
+                              <th key={h} className="py-2 pr-3 text-left font-medium text-gray-400 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {page.map(p => (
+                            <tr key={p.date} className="border-b border-gray-50 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/60">
+                              <td className="py-2 pr-3 text-gray-600 dark:text-gray-400 whitespace-nowrap font-mono">{p.date}</td>
+                              <td className="py-2 pr-3 text-gray-700 dark:text-gray-300">{formatNumber(p.price, 4)}</td>
+                              <td className="py-2 pr-3 text-gray-700 dark:text-gray-300">{formatEur(p.price_eur)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <Paginator page={pricePage} totalPages={totalPages} total={sorted.length} onChange={setPricePage} />
+                  </>
+                )
+              })()
             )}
           </div>
         </div>
       </div>
+
+      {showImport && (
+        <PriceImportModal
+          asset={asset}
+          onClose={() => setShowImport(false)}
+          onSaved={() => {
+            setShowImport(false)
+            setLoadingPrices(true)
+            assetsApi.history(asset.id, period).then(setPrices).finally(() => setLoadingPrices(false))
+          }}
+        />
+      )}
     </>
   )
 }
