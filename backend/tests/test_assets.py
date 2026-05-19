@@ -115,6 +115,34 @@ class TestUpdateAsset:
         assert r.status_code == 200
         assert r.json()["name"] == "Apple Inc (Renamed)"
 
+    def test_update_isin_with_transactions(self, client):
+        """Setting ISIN on an asset with transactions must not throw a FK error (DuckDB #20246)."""
+        asset = create_asset(client, ticker="RDDT", name="Reddit")
+        create_fx_rate(client, "USD", 0.92)
+        create_buy(client, asset["id"])
+        r = client.put(f"/api/assets/{asset['id']}", json={"isin": "US75734B1008"})
+        assert r.status_code == 200
+        assert r.json()["isin"] == "US75734B1008"
+        txs = client.get("/api/transactions").json()
+        assert len(txs) == 1
+
+    def test_update_all_fields_with_transactions(self, client):
+        """Frontend always sends all fields at once — must preserve transactions for any change."""
+        asset = create_asset(client, ticker="RDDT", name="Reddit")
+        create_fx_rate(client, "USD", 0.92)
+        create_buy(client, asset["id"])
+        markets = client.get("/api/assets/markets").json()
+        valid_id = markets[0]["id"]
+        r = client.put(f"/api/assets/{asset['id']}", json={
+            "name": "Reddit Inc", "ticker": "RDDT", "currency": "USD",
+            "isin": "US75734B1008", "market_id": valid_id,
+            "manual_price": False, "image_url": None,
+        })
+        assert r.status_code == 200
+        assert r.json()["isin"] == "US75734B1008"
+        txs = client.get("/api/transactions").json()
+        assert len(txs) == 1
+
     def test_update_invalid_market_id_returns_422(self, client):
         """Sending a market_id that doesn't exist must return 422, not 500."""
         asset = create_asset(client)
