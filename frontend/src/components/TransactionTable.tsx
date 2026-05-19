@@ -6,7 +6,7 @@ import {
   useReactTable,
 } from '@tanstack/react-table'
 import type { SortingState } from '@tanstack/react-table'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
 import type { Transaction } from '../api/client'
 import { transactionsApi } from '../api/client'
@@ -68,7 +68,7 @@ export function TransactionTable() {
   const [filterOp, setFilterOp]         = useState<'buy' | 'sell' | 'all'>('all')
   const [filterBroker, setFilterBroker] = useState<string>('all')
 
-  const load = () => {
+  const load = useCallback(() => {
     setLoading(true)
     const params: Record<string, string> = period === 'custom'
       ? { ...(dateFrom && { date_from: dateFrom }), ...(dateTo && { date_to: dateTo }) }
@@ -77,11 +77,11 @@ export function TransactionTable() {
       setTransactions(d)
       setLoading(false)
     }).catch(() => setLoading(false))
-  }
+  }, [period, dateFrom, dateTo])
 
-  useEffect(() => { load() }, [period, dateFrom, dateTo])
+  useEffect(() => { load() }, [load])
 
-  const handleDelete = async (tx: Transaction) => {
+  const handleDelete = useCallback(async (tx: Transaction) => {
     if (!confirm(`¿Eliminar transacción de ${tx.shares} × ${tx.asset_ticker}?`)) return
     setDeletingId(tx.id)
     try {
@@ -93,9 +93,9 @@ export function TransactionTable() {
     } finally {
       setDeletingId(null)
     }
-  }
+  }, [load])
 
-  const columns = [
+  const columns = useMemo(() => [
     col.accessor('date', {
       header: 'Fecha',
       cell: info => <span className="text-gray-600 dark:text-gray-400 text-sm">{info.getValue()}</span>,
@@ -218,14 +218,20 @@ export function TransactionTable() {
         )
       },
     }),
-  ]
+  ], [handleDelete, setEditTx])
 
-  const activeBrokers = [...new Set(transactions.map(t => t.broker))].filter(b => BROKERS.includes(b as typeof BROKERS[number]))
+  const activeBrokers = useMemo(
+    () => [...new Set(transactions.map(t => t.broker))].filter(b => BROKERS.includes(b as typeof BROKERS[number])),
+    [transactions]
+  )
 
-  const filtered = transactions.filter(t =>
-    (filterType   === 'all' || t.asset_type === filterType) &&
-    (filterOp     === 'all' || t.type       === filterOp) &&
-    (filterBroker === 'all' || t.broker     === filterBroker)
+  const filtered = useMemo(
+    () => transactions.filter(t =>
+      (filterType   === 'all' || t.asset_type === filterType) &&
+      (filterOp     === 'all' || t.type       === filterOp) &&
+      (filterBroker === 'all' || t.broker     === filterBroker)
+    ),
+    [transactions, filterType, filterOp, filterBroker]
   )
 
   const table = useReactTable({
