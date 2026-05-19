@@ -24,6 +24,10 @@ MARKETS_SEED = [
     ("XNAS", "NASDAQ", "America/New_York", "09:30", "16:00", "US"),
     ("CNMV", "CNMV Fondos (Spain)", "Europe/Madrid", "00:00", "18:00", "ES"),
     ("XSTO", "Nasdaq Stockholm AB", "Europe/Stockholm", "09:00", "17:30", "SE"),
+    ("XPAR", "Euronext Paris", "Europe/Paris", "09:00", "17:30", "FR"),
+    ("XTKS", "Tokyo Stock Exchange", "Asia/Tokyo", "09:00", "15:30", "JP"),
+    ("XTSE", "Toronto Stock Exchange", "America/Toronto", "09:30", "16:00", "CA"),
+    ("XTSX", "TSX Venture Exchange", "America/Toronto", "09:30", "16:00", "CA"),
 ]
 
 

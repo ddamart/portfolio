@@ -38,6 +38,10 @@ _SUFFIX_TO_MIC = {
     ".MC": "XMAD",
     ".L":  "XLON",
     ".ST": "XSTO",
+    ".PA": "XPAR",
+    ".T":  "XTKS",
+    ".TO": "XTSE",
+    ".V":  "XTSX",
 }
 
 # ISIN country prefix → default MIC
@@ -48,6 +52,9 @@ _ISIN_COUNTRY_TO_MIC: dict[str, str] = {
     "GB": "XLON",
     "US": "XNAS",
     "SE": "XSTO",
+    "FR": "XPAR",
+    "JP": "XTKS",
+    "CA": "XTSE",
 }
 
 

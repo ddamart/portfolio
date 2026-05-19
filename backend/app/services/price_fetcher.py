@@ -523,6 +523,9 @@ _OPENFIGI_EXCH_TO_SUFFIX: dict[str, str] = {
     "FP": ".PA",
     "SW": ".SW",
     "SS": ".ST",
+    "JT": ".T",    # Tokyo Stock Exchange
+    "CT": ".TO",   # Toronto Stock Exchange
+    "CV": ".V",    # TSX Venture Exchange
 }
 
 # For each ISIN country prefix, prefer the OpenFIGI exchCode for that country's main exchange.
@@ -539,6 +542,8 @@ _ISIN_COUNTRY_PREFERRED_EXCH: dict[str, str] = {
     "IT": "IM",   # Borsa Italiana
     "BE": "BB",   # Euronext Brussels
     "PT": "PL",   # Euronext Lisbon
+    "JP": "JT",   # Tokyo Stock Exchange
+    "CA": "CT",   # Toronto Stock Exchange
 }
 
 _ISIN_COUNTRY_FUND: set[str] = {"ES", "FR", "LU", "IE"}  # likely mutual fund domiciles
