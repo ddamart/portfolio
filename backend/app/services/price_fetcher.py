@@ -525,6 +525,22 @@ _OPENFIGI_EXCH_TO_SUFFIX: dict[str, str] = {
     "SS": ".ST",
 }
 
+# For each ISIN country prefix, prefer the OpenFIGI exchCode for that country's main exchange.
+# OpenFIGI returns many cross-listings; the home exchange usually has the tightest spread
+# and is the one yfinance recognises best.
+_ISIN_COUNTRY_PREFERRED_EXCH: dict[str, str] = {
+    "FR": "FP",   # Euronext Paris
+    "DE": "GY",   # Xetra
+    "NL": "NA",   # Euronext Amsterdam
+    "ES": "SM",   # Bolsa de Madrid
+    "GB": "LN",   # London Stock Exchange
+    "SE": "SS",   # Nasdaq Stockholm
+    "CH": "SW",   # SIX Swiss Exchange
+    "IT": "IM",   # Borsa Italiana
+    "BE": "BB",   # Euronext Brussels
+    "PT": "PL",   # Euronext Lisbon
+}
+
 _ISIN_COUNTRY_FUND: set[str] = {"ES", "FR", "LU", "IE"}  # likely mutual fund domiciles
 
 
@@ -656,7 +672,14 @@ def _openfigi_resolve(isin: str) -> tuple[Optional[str], Optional[str]]:
         if not candidates:
             candidates = results[0]["data"]
 
-        best = candidates[0]
+        # Prefer the exchange matching the ISIN's home country so we pick the
+        # primary listing (e.g. SOI.PA) over cheaper cross-listings (e.g. SOH1.DE).
+        preferred_exch = _ISIN_COUNTRY_PREFERRED_EXCH.get(isin[:2])
+        if preferred_exch:
+            home = [c for c in candidates if c.get("exchCode") == preferred_exch]
+            best = home[0] if home else candidates[0]
+        else:
+            best = candidates[0]
         exch = best.get("exchCode", "")
         raw_ticker = best.get("ticker", "")
         sec_type = best.get("securityType2", "").lower()

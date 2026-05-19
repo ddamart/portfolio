@@ -1,5 +1,7 @@
 """Tests for /api/assets endpoints."""
+import json
 import pytest
+from unittest.mock import patch, MagicMock
 from .conftest import create_asset, create_buy, create_fx_rate
 import app.database as db_module
 
@@ -104,6 +106,36 @@ class TestUpdateAsset:
         r = client.put(f"/api/assets/{asset['id']}", json={"isin": "TOOSHORT"})
         assert r.status_code == 422
 
+    def test_update_name_with_transactions(self, client):
+        """Renaming an asset that has linked transactions must not throw a FK error."""
+        asset = create_asset(client)
+        create_fx_rate(client, "USD", 0.92)
+        create_buy(client, asset["id"])
+        r = client.put(f"/api/assets/{asset['id']}", json={"name": "Apple Inc (Renamed)"})
+        assert r.status_code == 200
+        assert r.json()["name"] == "Apple Inc (Renamed)"
+
+    def test_update_invalid_market_id_returns_422(self, client):
+        """Sending a market_id that doesn't exist must return 422, not 500."""
+        asset = create_asset(client)
+        r = client.put(f"/api/assets/{asset['id']}", json={"market_id": 9999})
+        assert r.status_code == 422
+        assert "market_id" in r.json()["detail"]
+
+    def test_update_valid_market_id(self, client):
+        """Changing market_id to an existing market works."""
+        asset = create_asset(client)
+        markets = client.get("/api/assets/markets").json()
+        valid_id = markets[0]["id"]
+        r = client.put(f"/api/assets/{asset['id']}", json={"market_id": valid_id})
+        assert r.status_code == 200
+        assert r.json()["market_id"] == valid_id
+
+    def test_update_empty_body_returns_400(self, client):
+        asset = create_asset(client)
+        r = client.put(f"/api/assets/{asset['id']}", json={})
+        assert r.status_code == 400
+
 
 class TestDeleteAsset:
     def test_delete_asset_no_transactions(self, client):
@@ -182,3 +214,58 @@ class TestPriceImport:
     def test_import_nonexistent_asset(self, client):
         r = client.post("/api/assets/9999/prices/import", json=[{"date": "2025-01-02", "price": 10.0}])
         assert r.status_code == 404
+
+
+class TestOpenFigiExchangePreference:
+    """_openfigi_resolve should prefer the home-country exchange over cross-listings."""
+
+    def _make_figi_response(self, candidates: list[dict]) -> MagicMock:
+        payload = json.dumps([{"data": candidates}]).encode()
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = payload
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        return mock_resp
+
+    def test_french_isin_prefers_paris_over_xetra(self):
+        """FR ISIN should resolve to .PA ticker, not .DE cross-listing."""
+        from app.services.price_fetcher import _openfigi_resolve
+        candidates = [
+            {"exchCode": "GY", "ticker": "SOH1", "securityType2": "Common Stock"},  # Xetra
+            {"exchCode": "FP", "ticker": "SOI",  "securityType2": "Common Stock"},  # Paris
+        ]
+        with patch("urllib.request.urlopen", return_value=self._make_figi_response(candidates)):
+            ticker, asset_type = _openfigi_resolve("FR0013227113")
+        assert ticker == "SOI.PA"
+        assert asset_type == "stock"
+
+    def test_german_isin_prefers_xetra(self):
+        from app.services.price_fetcher import _openfigi_resolve
+        candidates = [
+            {"exchCode": "UN", "ticker": "SAP",  "securityType2": "Common Stock"},  # NYSE ADR
+            {"exchCode": "GY", "ticker": "SAP",  "securityType2": "Common Stock"},  # Xetra
+        ]
+        with patch("urllib.request.urlopen", return_value=self._make_figi_response(candidates)):
+            ticker, _ = _openfigi_resolve("DE0007164600")
+        assert ticker == "SAP.DE"
+
+    def test_fallback_to_first_candidate_when_no_home_match(self):
+        """Unknown ISIN country falls back to the first candidate."""
+        from app.services.price_fetcher import _openfigi_resolve
+        candidates = [
+            {"exchCode": "GY", "ticker": "XYZ", "securityType2": "Common Stock"},
+        ]
+        with patch("urllib.request.urlopen", return_value=self._make_figi_response(candidates)):
+            ticker, _ = _openfigi_resolve("AU0000000000")  # AU not in preference map
+        assert ticker == "XYZ.DE"
+
+    def test_returns_none_on_empty_response(self):
+        from app.services.price_fetcher import _openfigi_resolve
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps([{}]).encode()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            ticker, asset_type = _openfigi_resolve("FR0013227113")
+        assert ticker is None
+        assert asset_type is None

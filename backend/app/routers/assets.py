@@ -226,9 +226,17 @@ def update_asset(asset_id: int, body: AssetUpdate):
     if not conn.execute("SELECT id FROM assets WHERE id = ?", [asset_id]).fetchone():
         raise HTTPException(status_code=404, detail="Asset not found")
 
-    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    # exclude_unset so only fields explicitly included in the request body are updated;
+    # this also allows callers to null out a field (e.g. clear market_id) by sending null.
+    updates = body.model_dump(exclude_unset=True)
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
+
+    # Validate foreign key before hitting DuckDB — its FK error message is misleading
+    # (it reports the child-table constraint instead of the violated parent reference).
+    if "market_id" in updates and updates["market_id"] is not None:
+        if not conn.execute("SELECT id FROM markets WHERE id = ?", [updates["market_id"]]).fetchone():
+            raise HTTPException(status_code=422, detail=f"market_id {updates['market_id']} does not exist")
 
     set_clause = ", ".join(f"{k} = ?" for k in updates)
     conn.execute(
