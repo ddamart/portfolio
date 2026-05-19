@@ -141,16 +141,32 @@ export function TransactionTable() {
     }),
     col.accessor('commission', {
       header: 'Comisión',
-      cell: info => info.getValue() > 0
-        ? (
+      cell: info => {
+        const row = info.row.original
+        if (info.getValue() <= 0) return <span className="text-gray-400">—</span>
+        const commCcy = row.commission_currency
+        return (
           <div>
-            <div>{formatNumber(info.getValue(), 2)} {info.row.original.currency}</div>
-            {info.row.original.currency !== 'EUR' && (
-              <div className="text-xs text-gray-400">{formatEur(info.row.original.commission_eur)}</div>
-            )}
+            <div>{formatNumber(info.getValue(), 2)} {commCcy}</div>
+            {commCcy !== 'EUR' && <div className="text-xs text-gray-400">{formatEur(row.commission_eur)}</div>}
           </div>
         )
-        : <span className="text-gray-400">—</span>,
+      },
+    }),
+    col.display({
+      id: 'commission_pct',
+      header: 'Com. %',
+      cell: info => {
+        const row = info.row.original
+        const tradeEur = row.shares * row.price_eur
+        if (row.commission_eur <= 0 || tradeEur <= 0) return <span className="text-gray-400">—</span>
+        const pct = (row.commission_eur / tradeEur) * 100
+        return (
+          <span className="text-gray-500 dark:text-gray-400 text-xs">
+            {pct.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 3 })}%
+          </span>
+        )
+      },
     }),
     col.display({
       id: 'realized_pnl',
