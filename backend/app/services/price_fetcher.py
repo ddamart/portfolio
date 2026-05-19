@@ -679,9 +679,13 @@ def _openfigi_resolve(isin: str) -> tuple[Optional[str], Optional[str]]:
 
         # Prefer the exchange matching the ISIN's home country so we pick the
         # primary listing (e.g. SOI.PA) over cheaper cross-listings (e.g. SOH1.DE).
+        # For Canada we accept both TSX (CT) and TSX Venture (CV) as home exchanges,
+        # preferring CT if present but falling back to CV before any US cross-listing.
         preferred_exch = _ISIN_COUNTRY_PREFERRED_EXCH.get(isin[:2])
         if preferred_exch:
             home = [c for c in candidates if c.get("exchCode") == preferred_exch]
+            if not home and isin[:2] == "CA":
+                home = [c for c in candidates if c.get("exchCode") == "CV"]
             best = home[0] if home else candidates[0]
         else:
             best = candidates[0]

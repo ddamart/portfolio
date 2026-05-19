@@ -322,6 +322,28 @@ class TestOpenFigiExchangePreference:
             ticker, _ = _openfigi_resolve("AU0000000000")  # AU not in preference map
         assert ticker == "XYZ.DE"
 
+    def test_canadian_tsxv_stock_prefers_tsxv_over_otc(self):
+        """CA ISIN on TSX Venture (CV) should resolve to .V, not a US OTC cross-listing."""
+        from app.services.price_fetcher import _openfigi_resolve
+        candidates = [
+            {"exchCode": "UV", "ticker": "KRKN",  "securityType2": "Common Stock"},  # US OTC
+            {"exchCode": "CV", "ticker": "PNG",   "securityType2": "Common Stock"},  # TSXV
+        ]
+        with patch("urllib.request.urlopen", return_value=self._make_figi_response(candidates)):
+            ticker, _ = _openfigi_resolve("CA49013A2002")
+        assert ticker == "PNG.V"
+
+    def test_canadian_tsx_stock_prefers_tsx_over_tsxv(self):
+        """CA ISIN with both TSX (CT) and TSXV (CV) listings prefers TSX main board."""
+        from app.services.price_fetcher import _openfigi_resolve
+        candidates = [
+            {"exchCode": "CV", "ticker": "HPS",   "securityType2": "Common Stock"},  # TSXV
+            {"exchCode": "CT", "ticker": "HPS",   "securityType2": "Common Stock"},  # TSX main
+        ]
+        with patch("urllib.request.urlopen", return_value=self._make_figi_response(candidates)):
+            ticker, _ = _openfigi_resolve("CA4071671094")
+        assert ticker == "HPS.TO"
+
     def test_returns_none_on_empty_response(self):
         from app.services.price_fetcher import _openfigi_resolve
         mock_resp = MagicMock()
