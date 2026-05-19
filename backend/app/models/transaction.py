@@ -15,6 +15,7 @@ class TransactionCreate(BaseModel):
     price: float
     currency: str = "EUR"
     commission: float = 0.0
+    commission_currency: Optional[str] = None  # defaults to currency when None
     date: datetime.date
     notes: Optional[str] = None
     # Computed on the backend from FX table; only send if you already know them
@@ -44,6 +45,7 @@ class TransactionUpdate(BaseModel):
     price_eur: Optional[float] = None
     currency: Optional[str] = None
     commission: Optional[float] = None
+    commission_currency: Optional[str] = None
     commission_eur: Optional[float] = None
     date: Optional[datetime.date] = None
     notes: Optional[str] = None
@@ -63,6 +65,7 @@ class TransactionOut(BaseModel):
     price_eur: float
     currency: str
     commission: float
+    commission_currency: str
     commission_eur: float
     date: datetime.date
     notes: Optional[str]

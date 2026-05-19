@@ -35,6 +35,7 @@ export interface Transaction {
   price_eur: number
   currency: string
   commission: number
+  commission_currency: string
   commission_eur: number
   date: string
   notes: string | null
@@ -51,8 +52,10 @@ export interface TransactionCreate {
   broker: string
   shares: number
   price: number
+  price_eur?: number
   currency: string
   commission: number
+  commission_currency?: string
   date: string
   notes?: string
 }

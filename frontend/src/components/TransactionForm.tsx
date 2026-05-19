@@ -25,6 +25,7 @@ const MARKET_CURRENCY: Record<string, string> = {
   XETR: 'EUR', XAMS: 'EUR', XMAD: 'EUR', CNMV: 'EUR',
   XLON: 'GBP',
   XNYS: 'USD', XNAS: 'USD',
+  XSTO: 'SEK',
 }
 
 const TYPE_BADGE: Record<string, string> = {
@@ -79,9 +80,12 @@ export function TransactionForm({ existing, onClose, onSaved }: Props) {
   const [shares, setShares]         = useState(existing?.shares?.toString() ?? '')
   const [price, setPrice]           = useState(existing?.price?.toString() ?? '')
   const [currency, setCurrency]     = useState(existing?.currency ?? 'EUR')
-  const [commission, setCommission] = useState(existing?.commission?.toString() ?? '0')
+  const [commission, setCommission]               = useState(existing?.commission?.toString() ?? '0')
+  const [commissionCurrency, setCommissionCurrency] = useState(existing?.commission_currency ?? existing?.currency ?? 'EUR')
   const [notes, setNotes]           = useState(existing?.notes ?? '')
   const [saving, setSaving]         = useState(false)
+  // Optional: total actually paid in EUR (when broker applies their own FX rate)
+  const [totalEurInput, setTotalEurInput] = useState('')
 
   // --- EUR rate hint ---
   const [eurRate, setEurRate] = useState<number | null>(currency === 'EUR' ? 1 : null)
@@ -138,7 +142,11 @@ export function TransactionForm({ existing, onClose, onSaved }: Props) {
   }, [lookupQuery, showNewAsset])
 
   useEffect(() => {
-    if (currency === 'EUR') { setEurRate(1); return }
+    if (currency === 'EUR') {
+      setEurRate(1)
+      setTotalEurInput('')
+      return
+    }
     pricesApi.fxRate(currency, date)
       .then(r => setEurRate(r.rate))
       .catch(() => setEurRate(null))
@@ -159,6 +167,8 @@ export function TransactionForm({ existing, onClose, onSaved }: Props) {
     setAssetQuery(a.ticker)
     setAssetResults([])
     setCurrency(a.currency)
+    // Reset commission currency to follow the new asset currency (unless user already chose EUR)
+    if (commissionCurrency !== 'EUR') setCommissionCurrency(a.currency)
     setShowNewAsset(false)
   }
 
@@ -207,16 +217,19 @@ export function TransactionForm({ existing, onClose, onSaved }: Props) {
     if (!sharesN || !priceN) { toast.error('Participaciones y precio son obligatorios'); return }
 
     setSaving(true)
+    const totalEurOverride = totalEurInput ? parseFloat(totalEurInput) : null
     const body: TransactionCreate = {
-      asset_id:   selectedAsset.id,
-      type:       txType,
+      asset_id:            selectedAsset.id,
+      type:                txType,
       broker,
-      shares:     sharesN,
-      price:      priceN,
+      shares:              sharesN,
+      price:               priceN,
+      price_eur:           (totalEurOverride != null && sharesN > 0) ? totalEurOverride / sharesN : undefined,
       currency,
-      commission: parseFloat(commission) || 0,
+      commission:          commissionN,
+      commission_currency: commissionCurrency !== currency ? commissionCurrency : undefined,
       date,
-      notes:      notes || undefined,
+      notes:               notes || undefined,
     }
 
     try {
@@ -240,13 +253,29 @@ export function TransactionForm({ existing, onClose, onSaved }: Props) {
     }
   }
 
-  const sharesN       = parseFloat(shares) || 0
-  const priceN        = parseFloat(price) || 0
-  const commissionN   = parseFloat(commission) || 0
-  const totalLocal    = sharesN * priceN + (txType === 'buy' ? commissionN : -commissionN)
-  const priceEur      = eurRate != null && priceN      ? priceN * eurRate      : null
-  const commissionEur = eurRate != null && commissionN ? commissionN * eurRate : null
-  const totalEur      = eurRate != null && totalLocal  ? totalLocal * eurRate  : null
+  const sharesN     = parseFloat(shares) || 0
+  const priceN      = parseFloat(price) || 0
+  const commissionN = parseFloat(commission) || 0
+  const priceEurFromRate = eurRate != null ? priceN * eurRate : null
+
+  // When user enters the total EUR paid at broker's rate, derive price_eur from it
+  const totalEurOverrideN = totalEurInput ? parseFloat(totalEurInput) : null
+  const priceEurFromOverride = (totalEurOverrideN != null && sharesN > 0) ? totalEurOverrideN / sharesN : null
+  const priceEur = priceEurFromOverride ?? priceEurFromRate
+
+  // Commission EUR: if commission is already in EUR, no conversion needed
+  const commissionEur = commissionCurrency === 'EUR'
+    ? commissionN
+    : (eurRate != null ? commissionN * eurRate : null)
+
+  // Local total only includes commission when commission is in the same currency as price
+  const commissionLocal = commissionCurrency === currency ? commissionN : 0
+  const totalLocal = sharesN * priceN + (txType === 'buy' ? commissionLocal : -commissionLocal)
+  // EUR total: use override directly when set (it's the exact broker total), otherwise compute
+  const totalEurBase = totalEurOverrideN ?? (priceEur != null ? sharesN * priceEur : null)
+  const totalEur = totalEurBase != null && commissionEur != null
+    ? totalEurBase + (txType === 'buy' ? commissionEur : -commissionEur)
+    : totalEurBase
 
   const fmt = (v: number, decimals = 2) =>
     v.toLocaleString('es-ES', { minimumFractionDigits: decimals, maximumFractionDigits: decimals > 2 ? 4 : 2 })
@@ -553,18 +582,68 @@ export function TransactionForm({ existing, onClose, onSaved }: Props) {
                 {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
               </select>
             </div>
-            {eurHint(priceEur)}
-            {eurRate == null && currency !== 'EUR' && (
-              <span className="text-xs text-amber-500 mt-0.5 block">Sin tasa FX — actualiza precios para conversión exacta</span>
+            {priceEurFromOverride == null && eurHint(priceEur)}
+            {eurRate == null && currency !== 'EUR' && priceEurFromOverride == null && (
+              <span className="text-xs text-amber-500 mt-0.5 block">Sin tasa FX — actualiza precios o introduce el total en EUR abajo</span>
             )}
           </div>
 
+          {/* ── EUR total override (broker FX rate) ──── */}
+          {currency !== 'EUR' && (
+            <div>
+              <label className={labelCls}>
+                Total real pagado en EUR — al cambio del broker (opcional)
+              </label>
+              <div className="flex rounded-lg border border-gray-300 dark:border-gray-600 overflow-hidden focus-within:ring-2 focus-within:ring-blue-500">
+                <input
+                  type="number" step="any" min="0" value={totalEurInput}
+                  onChange={e => setTotalEurInput(e.target.value)}
+                  placeholder="Ej: 1 234.56 — sin comisión"
+                  className="flex-1 min-w-0 px-3 py-2 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none"
+                />
+                <span className="border-l border-gray-300 dark:border-gray-600 px-3 py-2 text-sm bg-gray-50 dark:bg-gray-600 text-gray-500 dark:text-gray-300 font-mono">
+                  EUR
+                </span>
+              </div>
+              {priceEurFromOverride != null && sharesN > 0 && (
+                <span className="text-xs text-blue-500 mt-0.5 block">
+                  → {fmt(priceEurFromOverride, 4)} € / participación (ignora la tasa FX calculada)
+                </span>
+              )}
+            </div>
+          )}
+
           {/* ── Commission ────────────────────────────── */}
           <div>
-            <label className={labelCls}>Comisión en {currency} (opcional)</label>
-            <input type="number" step="any" min="0" value={commission}
-              onChange={e => setCommission(e.target.value)} className={inputCls} placeholder="0.00" />
-            {eurHint(commissionEur)}
+            <label className={labelCls}>Comisión (opcional)</label>
+            <div className="flex rounded-lg border border-gray-300 dark:border-gray-600 overflow-hidden focus-within:ring-2 focus-within:ring-blue-500">
+              <input
+                type="number" step="any" min="0" value={commission}
+                onChange={e => setCommission(e.target.value)}
+                placeholder="0.00"
+                className="flex-1 min-w-0 px-3 py-2 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none"
+              />
+              {currency !== 'EUR' ? (
+                // Toggle between local currency and EUR
+                <div className="flex border-l border-gray-300 dark:border-gray-600">
+                  {[currency, 'EUR'].map(ccy => (
+                    <button key={ccy} type="button" onClick={() => setCommissionCurrency(ccy)}
+                      className={`px-2.5 py-2 text-xs font-mono font-medium transition-colors ${
+                        commissionCurrency === ccy
+                          ? 'bg-blue-500 text-white'
+                          : 'bg-gray-50 dark:bg-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-500'
+                      }`}>
+                      {ccy}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <span className="border-l border-gray-300 dark:border-gray-600 px-3 py-2 text-sm bg-gray-50 dark:bg-gray-600 text-gray-500 dark:text-gray-300 font-mono">
+                  EUR
+                </span>
+              )}
+            </div>
+            {commissionCurrency !== 'EUR' && eurHint(commissionEur)}
           </div>
 
           {/* ── Total cost ────────────────────────────── */}

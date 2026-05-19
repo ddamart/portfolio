@@ -122,26 +122,37 @@ def _apply_schema(conn: duckdb.DuckDBPyConnection) -> None:
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS transactions (
-            id             INTEGER PRIMARY KEY,
-            asset_id       INTEGER NOT NULL REFERENCES assets(id),
-            type           VARCHAR NOT NULL CHECK (type IN ('buy', 'sell')),
-            broker         VARCHAR NOT NULL CHECK (broker IN ('openbank', 'trade_republic', 'revolut', 'degiro')),
-            shares         DECIMAL(18,8) NOT NULL,
-            price          DECIMAL(18,6) NOT NULL,
-            price_eur      DECIMAL(18,6) NOT NULL,
-            currency       VARCHAR(3) NOT NULL DEFAULT 'EUR',
-            commission     DECIMAL(10,4) NOT NULL DEFAULT 0,
-            commission_eur DECIMAL(10,4) NOT NULL DEFAULT 0,
-            date           DATE NOT NULL,
-            notes          VARCHAR,
-            created_at     TIMESTAMP DEFAULT current_timestamp,
-            updated_at     TIMESTAMP DEFAULT current_timestamp
+            id                  INTEGER PRIMARY KEY,
+            asset_id            INTEGER NOT NULL REFERENCES assets(id),
+            type                VARCHAR NOT NULL CHECK (type IN ('buy', 'sell')),
+            broker              VARCHAR NOT NULL CHECK (broker IN ('openbank', 'trade_republic', 'revolut', 'degiro')),
+            shares              DECIMAL(18,8) NOT NULL,
+            price               DECIMAL(18,6) NOT NULL,
+            price_eur           DECIMAL(18,6) NOT NULL,
+            currency            VARCHAR(3) NOT NULL DEFAULT 'EUR',
+            commission          DECIMAL(10,4) NOT NULL DEFAULT 0,
+            commission_currency VARCHAR(3),
+            commission_eur      DECIMAL(10,4) NOT NULL DEFAULT 0,
+            date                DATE NOT NULL,
+            notes               VARCHAR,
+            created_at          TIMESTAMP DEFAULT current_timestamp,
+            updated_at          TIMESTAMP DEFAULT current_timestamp
         )
     """)
 
     conn.execute("""
         CREATE SEQUENCE IF NOT EXISTS transactions_id_seq START 1
     """)
+
+    # Migration: add commission_currency for brokers (e.g. Degiro) that charge in EUR
+    # even when the asset is priced in another currency
+    has_comm_ccy = conn.execute("""
+        SELECT COUNT(*) FROM information_schema.columns
+        WHERE table_name = 'transactions' AND column_name = 'commission_currency'
+    """).fetchone()[0]
+    if not has_comm_ccy:
+        conn.execute("ALTER TABLE transactions ADD COLUMN commission_currency VARCHAR(3)")
+        conn.execute("UPDATE transactions SET commission_currency = currency WHERE commission_currency IS NULL")
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS prices (

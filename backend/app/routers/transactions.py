@@ -10,15 +10,21 @@ router = APIRouter(prefix="/api/transactions", tags=["transactions"])
 
 
 def _row_to_out(r) -> TransactionOut:
+    # Column order: id, asset_id, name, ticker, type, image_url,
+    #   tx.type, broker, shares, price, price_eur, currency,
+    #   commission, commission_currency, commission_eur,
+    #   date, notes, created_at, updated_at
+    #   [+cost_basis_eur, realized_pnl_eur in list query]
     return TransactionOut(
         id=r[0], asset_id=r[1], asset_name=r[2], asset_ticker=r[3], asset_type=r[4],
         asset_image_url=r[5],
         type=r[6], broker=r[7], shares=float(r[8]), price=float(r[9]),
         price_eur=float(r[10]), currency=r[11], commission=float(r[12]),
-        commission_eur=float(r[13]), date=r[14], notes=r[15],
-        created_at=r[16], updated_at=r[17],
-        cost_basis_eur=float(r[18]) if len(r) > 18 and r[18] is not None else None,
-        realized_pnl_eur=float(r[19]) if len(r) > 19 and r[19] is not None else None,
+        commission_currency=r[13] or r[11],  # fallback to tx currency for old rows
+        commission_eur=float(r[14]), date=r[15], notes=r[16],
+        created_at=r[17], updated_at=r[18],
+        cost_basis_eur=float(r[19]) if len(r) > 19 and r[19] is not None else None,
+        realized_pnl_eur=float(r[20]) if len(r) > 20 and r[20] is not None else None,
     )
 
 
@@ -83,7 +89,7 @@ def list_transactions(
     SELECT
         t.id, t.asset_id, a.name, a.ticker, a.type, a.image_url,
         t.type, t.broker, t.shares, t.price, t.price_eur,
-        t.currency, t.commission, t.commission_eur,
+        t.currency, t.commission, t.commission_currency, t.commission_eur,
         t.date, t.notes, t.created_at, t.updated_at,
         CASE WHEN t.type = 'sell' THEN av.avco_eur END AS cost_basis_eur,
         CASE WHEN t.type = 'sell'
@@ -106,7 +112,7 @@ def get_transaction(tx_id: int):
     row = conn.execute("""
         SELECT t.id, t.asset_id, a.name, a.ticker, a.type, a.image_url,
                t.type, t.broker, t.shares, t.price, t.price_eur,
-               t.currency, t.commission, t.commission_eur,
+               t.currency, t.commission, t.commission_currency, t.commission_eur,
                t.date, t.notes, t.created_at, t.updated_at
         FROM transactions t JOIN assets a ON a.id = t.asset_id
         WHERE t.id = ?
@@ -146,25 +152,42 @@ def create_transaction(body: TransactionCreate):
     except ValueError:
         rate = 1.0  # no FX data yet — fallback; will be corrected after price refresh
     price_eur = body.price_eur if body.price_eur is not None else body.price * rate
-    commission_eur = body.commission_eur if body.commission_eur is not None else body.commission * rate
+
+    commission_ccy = (body.commission_currency or body.currency).upper()
+    if body.commission_eur is not None:
+        commission_eur = body.commission_eur
+    elif commission_ccy == "EUR":
+        commission_eur = body.commission
+    elif commission_ccy == body.currency.upper():
+        commission_eur = body.commission * rate
+    else:
+        try:
+            comm_rate = get_rate_to_eur(conn, commission_ccy, body.date)
+        except ValueError:
+            comm_rate = rate
+        commission_eur = body.commission * comm_rate
 
     conn.execute(
         """
-        INSERT INTO transactions VALUES (
-            nextval('transactions_id_seq'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp, current_timestamp
-        )
+        INSERT INTO transactions
+            (id, asset_id, type, broker, shares, price, price_eur, currency,
+             commission, commission_currency, commission_eur, date, notes,
+             created_at, updated_at)
+        VALUES
+            (nextval('transactions_id_seq'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+             current_timestamp, current_timestamp)
         """,
         [
             body.asset_id, body.type, body.broker, body.shares,
             body.price, price_eur, body.currency,
-            body.commission, commission_eur, body.date, body.notes,
+            body.commission, commission_ccy, commission_eur, body.date, body.notes,
         ],
     )
 
     row = conn.execute("""
         SELECT t.id, t.asset_id, a.name, a.ticker, a.type, a.image_url,
                t.type, t.broker, t.shares, t.price, t.price_eur,
-               t.currency, t.commission, t.commission_eur,
+               t.currency, t.commission, t.commission_currency, t.commission_eur,
                t.date, t.notes, t.created_at, t.updated_at
         FROM transactions t JOIN assets a ON a.id = t.asset_id
         WHERE t.id = (SELECT MAX(id) FROM transactions)
@@ -201,7 +224,7 @@ def update_transaction(tx_id: int, body: TransactionUpdate):
     row = conn.execute("""
         SELECT t.id, t.asset_id, a.name, a.ticker, a.type, a.image_url,
                t.type, t.broker, t.shares, t.price, t.price_eur,
-               t.currency, t.commission, t.commission_eur,
+               t.currency, t.commission, t.commission_currency, t.commission_eur,
                t.date, t.notes, t.created_at, t.updated_at
         FROM transactions t JOIN assets a ON a.id = t.asset_id
         WHERE t.id = ?
