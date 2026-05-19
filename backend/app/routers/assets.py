@@ -264,8 +264,22 @@ def update_asset(asset_id: int, body: AssetUpdate):
     # fires FK checks on the DELETE before the re-INSERT, causing false constraint
     # violations on ALL multi-column updates when child rows exist (gh/duckdb/20246).
     # Workaround: evacuate child rows, apply the full UPDATE, then restore them.
-    tx_rows    = conn.execute("SELECT * FROM transactions WHERE asset_id = ?", [asset_id]).fetchall()
-    price_rows = conn.execute("SELECT * FROM prices       WHERE asset_id = ?", [asset_id]).fetchall()
+    #
+    # IMPORTANT: use explicit column lists (not SELECT *) — commission_currency was added
+    # via ALTER TABLE so its physical position in SELECT * differs from the INSERT column
+    # order, which corrupts data or raises a type cast error on restore.
+    #
+    # NOTE: do NOT wrap in conn.begin(). DuckDB evaluates FK constraints using committed
+    # data, so a pending DELETE inside a transaction is still "visible" to the FK check
+    # on the subsequent UPDATE rewrite. Each statement must auto-commit individually.
+    _TX_COLS = (
+        "id, asset_id, type, broker, shares, price, price_eur, currency, "
+        "commission, commission_currency, commission_eur, date, notes, created_at, updated_at"
+    )
+    tx_rows    = conn.execute(f"SELECT {_TX_COLS} FROM transactions WHERE asset_id = ?", [asset_id]).fetchall()
+    price_rows = conn.execute(
+        "SELECT asset_id, date, price, currency, price_eur FROM prices WHERE asset_id = ?", [asset_id]
+    ).fetchall()
 
     conn.execute("DELETE FROM transactions WHERE asset_id = ?", [asset_id])
     conn.execute("DELETE FROM prices       WHERE asset_id = ?", [asset_id])
@@ -278,9 +292,7 @@ def update_asset(asset_id: int, body: AssetUpdate):
 
     for row in tx_rows:
         conn.execute(
-            "INSERT INTO transactions (id, asset_id, type, broker, shares, price, price_eur, "
-            "currency, commission, commission_currency, commission_eur, date, notes, "
-            "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            f"INSERT INTO transactions ({_TX_COLS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             list(row),
         )
     for row in price_rows:

@@ -116,15 +116,23 @@ class TestUpdateAsset:
         assert r.json()["name"] == "Apple Inc (Renamed)"
 
     def test_update_isin_with_transactions(self, client):
-        """Setting ISIN on an asset with transactions must not throw a FK error (DuckDB #20246)."""
+        """Setting ISIN preserves all transaction data including commission_currency.
+
+        commission_currency was added via ALTER TABLE so its physical position in
+        SELECT * differs from the INSERT column order — a named SELECT must be used
+        or the restore silently corrupts data / raises a type error.
+        """
         asset = create_asset(client, ticker="RDDT", name="Reddit")
         create_fx_rate(client, "USD", 0.92)
-        create_buy(client, asset["id"])
+        create_buy(client, asset["id"], shares=5)
         r = client.put(f"/api/assets/{asset['id']}", json={"isin": "US75734B1008"})
         assert r.status_code == 200
         assert r.json()["isin"] == "US75734B1008"
         txs = client.get("/api/transactions").json()
         assert len(txs) == 1
+        tx = txs[0]
+        assert tx["shares"] == 5
+        assert tx["commission_currency"] == "USD"  # was corrupt when SELECT * was used
 
     def test_update_all_fields_with_transactions(self, client):
         """Frontend always sends all fields at once — must preserve transactions for any change."""
@@ -142,6 +150,7 @@ class TestUpdateAsset:
         assert r.json()["isin"] == "US75734B1008"
         txs = client.get("/api/transactions").json()
         assert len(txs) == 1
+        assert txs[0]["commission_currency"] == "USD"
 
     def test_update_invalid_market_id_returns_422(self, client):
         """Sending a market_id that doesn't exist must return 422, not 500."""
