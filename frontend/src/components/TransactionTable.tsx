@@ -22,6 +22,36 @@ const BROKER_LABELS: Record<string, string> = {
   degiro: 'Degiro',
 }
 
+const BROKERS = Object.keys(BROKER_LABELS) as (keyof typeof BROKER_LABELS)[]
+
+function FilterPills<T extends string>({
+  label, options, value, onChange,
+}: {
+  label: string
+  options: { value: T; label: string }[]
+  value: T | 'all'
+  onChange: (v: T | 'all') => void
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-xs text-gray-400 dark:text-gray-500 whitespace-nowrap">{label}:</span>
+      {options.map(opt => (
+        <button
+          key={opt.value}
+          onClick={() => onChange(value === opt.value ? 'all' : opt.value)}
+          className={`text-xs px-2.5 py-1 rounded-full border font-medium transition-colors whitespace-nowrap ${
+            value === opt.value
+              ? 'bg-blue-600 border-blue-600 text-white'
+              : 'border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400 hover:border-gray-400 dark:hover:border-gray-500'
+          }`}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 const col = createColumnHelper<Transaction>()
 
 export function TransactionTable() {
@@ -34,6 +64,9 @@ export function TransactionTable() {
   const [editTx, setEditTx] = useState<Transaction | null>(null)
   const [showAdd, setShowAdd] = useState(false)
   const [deletingId, setDeletingId] = useState<number | null>(null)
+  const [filterType, setFilterType]     = useState<'stock' | 'etf' | 'fund' | 'all'>('all')
+  const [filterOp, setFilterOp]         = useState<'buy' | 'sell' | 'all'>('all')
+  const [filterBroker, setFilterBroker] = useState<string>('all')
 
   const load = () => {
     setLoading(true)
@@ -187,8 +220,16 @@ export function TransactionTable() {
     }),
   ]
 
+  const activeBrokers = [...new Set(transactions.map(t => t.broker))].filter(b => BROKERS.includes(b as typeof BROKERS[number]))
+
+  const filtered = transactions.filter(t =>
+    (filterType   === 'all' || t.asset_type === filterType) &&
+    (filterOp     === 'all' || t.type       === filterOp) &&
+    (filterBroker === 'all' || t.broker     === filterBroker)
+  )
+
   const table = useReactTable({
-    data: transactions,
+    data: filtered,
     columns,
     state: { sorting },
     onSortingChange: setSorting,
@@ -198,7 +239,7 @@ export function TransactionTable() {
 
   return (
     <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
-      <div className="flex flex-wrap items-center justify-between gap-3 p-4 border-b border-gray-200 dark:border-gray-700">
+      <div className="flex flex-wrap items-center justify-between gap-3 p-4 border-b border-gray-100 dark:border-gray-700/50">
         <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Transacciones</h2>
         <div className="flex items-center gap-3">
           <PeriodFilter
@@ -215,6 +256,42 @@ export function TransactionTable() {
             + Nueva
           </button>
         </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-4 px-4 py-2.5 border-b border-gray-100 dark:border-gray-700">
+        <FilterPills
+          label="Tipo"
+          value={filterType}
+          onChange={setFilterType}
+          options={[
+            { value: 'stock', label: 'Acciones' },
+            { value: 'etf',   label: 'ETF' },
+            { value: 'fund',  label: 'Fondos' },
+          ]}
+        />
+        <FilterPills
+          label="Operación"
+          value={filterOp}
+          onChange={setFilterOp}
+          options={[
+            { value: 'buy',  label: 'Compra' },
+            { value: 'sell', label: 'Venta' },
+          ]}
+        />
+        <FilterPills
+          label="Broker"
+          value={filterBroker}
+          onChange={setFilterBroker}
+          options={activeBrokers.map(b => ({ value: b, label: BROKER_LABELS[b] ?? b }))}
+        />
+        {(filterType !== 'all' || filterOp !== 'all' || filterBroker !== 'all') && (
+          <button
+            onClick={() => { setFilterType('all'); setFilterOp('all'); setFilterBroker('all') }}
+            className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 underline ml-auto"
+          >
+            Limpiar filtros
+          </button>
+        )}
       </div>
 
       <div className="overflow-x-auto">
@@ -239,8 +316,10 @@ export function TransactionTable() {
           <tbody>
             {loading ? (
               <tr><td colSpan={columns.length + 1} className="text-center py-12 text-gray-400">Cargando...</td></tr>
-            ) : transactions.length === 0 ? (
-              <tr><td colSpan={columns.length + 1} className="text-center py-12 text-gray-400 text-sm">Sin transacciones para el período seleccionado.</td></tr>
+            ) : filtered.length === 0 ? (
+              <tr><td colSpan={columns.length + 1} className="text-center py-12 text-gray-400 text-sm">
+                {transactions.length === 0 ? 'Sin transacciones para el período seleccionado.' : 'Sin resultados para los filtros activos.'}
+              </td></tr>
             ) : (
               table.getRowModel().rows.map(row => (
                 <tr key={row.id} className="border-b border-gray-50 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors">
