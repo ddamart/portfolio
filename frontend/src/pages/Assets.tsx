@@ -1,10 +1,202 @@
 import { useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
-import type { Asset, Market } from '../api/client'
+import type { Asset, AssetLookup, Market } from '../api/client'
 import { assetsApi, pricesApi } from '../api/client'
 import { AssetDetailDrawer } from '../components/AssetDetailDrawer'
 import { AssetLogo } from '../components/AssetLogo'
 import { ManualPriceModal } from '../components/ManualPriceModal'
+
+const MARKET_CURRENCY: Record<string, string> = {
+  XETR: 'EUR', XAMS: 'EUR', XMAD: 'EUR', CNMV: 'EUR',
+  XLON: 'GBP', XNYS: 'USD', XNAS: 'USD', XSTO: 'SEK',
+}
+
+interface CreateDraft {
+  ticker: string
+  isin: string
+  name: string
+  type: 'stock' | 'etf' | 'fund'
+  market_id: number | null
+  currency: string
+  manual_price: boolean
+  image_url: string
+}
+
+const DEFAULT_CREATE: CreateDraft = {
+  ticker: '', isin: '', name: '', type: 'stock', market_id: null, currency: 'EUR',
+  manual_price: false, image_url: '',
+}
+
+function CreateAssetModal({
+  markets, onClose, onSaved,
+}: { markets: Market[]; onClose: () => void; onSaved: () => void }) {
+  const [query, setQuery] = useState('')
+  const [lookupResult, setLookupResult] = useState<AssetLookup | null>(null)
+  const [lookingUp, setLookingUp] = useState(false)
+  const [draft, setDraft] = useState<CreateDraft>(DEFAULT_CREATE)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    const q = query.trim()
+    if (q.length < 2) { setLookupResult(null); return }
+    setLookingUp(true)
+    const t = setTimeout(() => {
+      assetsApi.lookup(q)
+        .then(r => {
+          setLookupResult(r)
+          setDraft({
+            ticker:       r.ticker,
+            isin:         r.isin ?? '',
+            name:         r.name,
+            type:         r.type,
+            market_id:    r.market_id,
+            currency:     r.currency,
+            manual_price: !r.found,
+            image_url:    r.image_url ?? '',
+          })
+        })
+        .catch(() => {
+          setLookupResult(null)
+          setDraft(d => ({ ...d, ticker: q }))
+        })
+        .finally(() => setLookingUp(false))
+    }, 600)
+    return () => clearTimeout(t)
+  }, [query])
+
+  const handleMarketChange = (marketId: number | null) => {
+    const mic = markets.find(m => m.id === marketId)?.mic ?? ''
+    setDraft(d => ({ ...d, market_id: marketId, currency: MARKET_CURRENCY[mic] ?? d.currency }))
+  }
+
+  const save = async () => {
+    if (!draft.ticker.trim()) { toast.error('El ticker es obligatorio'); return }
+    setSaving(true)
+    try {
+      await assetsApi.create({
+        name:         draft.name || draft.ticker,
+        ticker:       draft.ticker.trim().toUpperCase(),
+        type:         draft.type,
+        currency:     draft.currency,
+        market_id:    draft.market_id,
+        image_url:    draft.image_url.trim() || null,
+        manual_price: draft.manual_price,
+        isin:         draft.isin.trim().toUpperCase() || null,
+      })
+      toast.success(`Activo "${draft.ticker.toUpperCase()}" creado`)
+      onSaved()
+      onClose()
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      toast.error(msg || 'Error al crear el activo')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const inputCls = "w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+  const labelCls = "block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1"
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white dark:bg-gray-800 rounded-xl w-full max-w-md shadow-xl">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-700">
+          <h2 className="font-semibold text-gray-900 dark:text-white">Nuevo activo</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
+        </div>
+
+        <div className="px-5 py-4 space-y-3">
+          {/* Lookup */}
+          <div>
+            <label className={labelCls}>Buscar por ISIN o ticker</label>
+            <div className="relative">
+              <input
+                value={query}
+                onChange={e => setQuery(e.target.value.toUpperCase())}
+                placeholder="ES0170960015 · AAPL · SOI.PA…"
+                className={`${inputCls} font-mono pr-8`}
+                autoFocus
+              />
+              {lookingUp && (
+                <span className="absolute right-2 top-2 text-gray-400 text-xs animate-spin">↻</span>
+              )}
+            </div>
+            {lookupResult && !lookingUp && (
+              <div className={`mt-1 text-xs px-2 py-1 rounded flex items-center gap-1.5 ${
+                lookupResult.found
+                  ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300'
+                  : 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300'
+              }`}>
+                <span>{lookupResult.found ? '✓' : '⚠'}</span>
+                <span>{lookupResult.found ? `Encontrado: ${lookupResult.name}` : 'No encontrado — rellena los campos manualmente'}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Fields */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={labelCls}>Ticker</label>
+              <input value={draft.ticker} onChange={e => setDraft(d => ({ ...d, ticker: e.target.value.toUpperCase() }))}
+                className={`${inputCls} font-mono`} placeholder="AAPL" />
+            </div>
+            <div>
+              <label className={labelCls}>ISIN</label>
+              <input value={draft.isin} onChange={e => setDraft(d => ({ ...d, isin: e.target.value.toUpperCase() }))}
+                className={`${inputCls} font-mono`} maxLength={12} placeholder="US0378331005" />
+            </div>
+          </div>
+          <div>
+            <label className={labelCls}>Nombre</label>
+            <input value={draft.name} onChange={e => setDraft(d => ({ ...d, name: e.target.value }))}
+              className={inputCls} placeholder="Apple Inc." />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={labelCls}>Tipo</label>
+              <select value={draft.type} onChange={e => setDraft(d => ({ ...d, type: e.target.value as CreateDraft['type'] }))}
+                className={inputCls}>
+                <option value="stock">Acción</option>
+                <option value="etf">ETF</option>
+                <option value="fund">Fondo</option>
+              </select>
+            </div>
+            <div>
+              <label className={labelCls}>Divisa</label>
+              <input value={draft.currency} onChange={e => setDraft(d => ({ ...d, currency: e.target.value.toUpperCase() }))}
+                className={`${inputCls} font-mono`} maxLength={3} placeholder="EUR" />
+            </div>
+          </div>
+          <div>
+            <label className={labelCls}>Mercado</label>
+            <select value={draft.market_id ?? ''} onChange={e => handleMarketChange(e.target.value ? Number(e.target.value) : null)}
+              className={inputCls}>
+              <option value="">Sin asignar</option>
+              {markets.map(m => <option key={m.id} value={m.id}>{m.name} ({m.country})</option>)}
+            </select>
+          </div>
+          <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 cursor-pointer pt-1">
+            <input type="checkbox" checked={draft.manual_price}
+              onChange={e => setDraft(d => ({ ...d, manual_price: e.target.checked }))}
+              className="rounded" />
+            Precio manual (desactiva fetch automático)
+          </label>
+        </div>
+
+        <div className="flex gap-3 px-5 py-4 border-t border-gray-200 dark:border-gray-700">
+          <button onClick={onClose}
+            className="flex-1 px-4 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">
+            Cancelar
+          </button>
+          <button onClick={save} disabled={saving || !draft.ticker.trim()}
+            className="flex-1 px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
+            {saving ? 'Creando…' : 'Crear activo'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 interface EditDraft {
   name: string
@@ -166,6 +358,7 @@ export function AssetsPage() {
   const [editAsset, setEditAsset] = useState<Asset | null>(null)
   const [priceAsset, setPriceAsset] = useState<Asset | null>(null)
   const [detailAsset, setDetailAsset] = useState<Asset | null>(null)
+  const [showCreate, setShowCreate] = useState(false)
   const [refreshingId, setRefreshingId] = useState<number | null>(null)
   const [search, setSearch] = useState('')
   const [onlyPortfolio, setOnlyPortfolio] = useState(false)
@@ -245,6 +438,12 @@ export function AssetsPage() {
             placeholder="Filtrar por ticker, nombre o ISIN…"
             className="border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-1.5 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 w-72"
           />
+          <button
+            onClick={() => setShowCreate(true)}
+            className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium whitespace-nowrap"
+          >
+            + Nuevo activo
+          </button>
         </div>
       </div>
 
@@ -327,6 +526,11 @@ export function AssetsPage() {
           </table>
         </div>
       </div>
+
+      {showCreate && (
+        <CreateAssetModal markets={markets}
+          onClose={() => setShowCreate(false)} onSaved={load} />
+      )}
 
       {editAsset && (
         <EditModal asset={editAsset} markets={markets}
