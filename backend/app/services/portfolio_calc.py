@@ -60,26 +60,26 @@ def get_holdings(
     WITH holdings AS (
         SELECT
             t.asset_id,
-            SUM(CASE WHEN t.type='buy' THEN t.shares ELSE -t.shares END) AS total_shares,
-            SUM(CASE WHEN t.type='buy' THEN t.shares * t.price_eur ELSE 0 END) /
-                NULLIF(SUM(CASE WHEN t.type='buy' THEN t.shares ELSE 0 END), 0) AS avg_buy_price_eur,
-            SUM(CASE WHEN t.type='buy' THEN t.shares * t.price ELSE 0 END) /
-                NULLIF(SUM(CASE WHEN t.type='buy' THEN t.shares ELSE 0 END), 0) AS avg_buy_price,
+            SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE -t.shares::DOUBLE END) AS total_shares,
+            SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE * t.price_eur::DOUBLE ELSE 0.0 END) /
+                NULLIF(SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE 0.0 END), 0) AS avg_buy_price_eur,
+            SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE * t.price::DOUBLE ELSE 0.0 END) /
+                NULLIF(SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE 0.0 END), 0) AS avg_buy_price,
             STRING_AGG(DISTINCT t.broker, ', ' ORDER BY t.broker) AS broker
         FROM transactions t
         WHERE 1=1 {tx_date_filter} {broker_filter}
         GROUP BY t.asset_id
-        HAVING SUM(CASE WHEN t.type='buy' THEN t.shares ELSE -t.shares END) > 0.000001
+        HAVING SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE -t.shares::DOUBLE END) > 0.000001
     ),
     latest_prices AS (
         SELECT DISTINCT ON (asset_id)
-            asset_id, price, price_eur, currency, date
+            asset_id, price::DOUBLE AS price, price_eur::DOUBLE AS price_eur, currency, date
         FROM prices
         ORDER BY asset_id, date DESC
     ),
     prev_prices AS (
         SELECT DISTINCT ON (p.asset_id)
-            p.asset_id, p.price_eur AS prev_price_eur
+            p.asset_id, p.price_eur::DOUBLE AS prev_price_eur
         FROM prices p
         JOIN (
             SELECT asset_id, MAX(date) AS max_date FROM prices GROUP BY asset_id
@@ -88,7 +88,7 @@ def get_holdings(
     ),
     total_value AS (
         -- LEFT JOIN so assets with no prices yet contribute 0 (not excluded)
-        SELECT COALESCE(SUM(h2.total_shares * COALESCE(lp2.price_eur, 0)), 0) AS total
+        SELECT COALESCE(SUM(h2.total_shares * COALESCE(lp2.price_eur, 0.0)), 0.0) AS total
         FROM holdings h2
         LEFT JOIN latest_prices lp2 ON lp2.asset_id = h2.asset_id
     )
@@ -222,15 +222,15 @@ def get_summary(conn: duckdb.DuckDBPyConnection) -> PortfolioSummary:
     WITH holdings AS (
         SELECT
             asset_id,
-            SUM(CASE WHEN type='buy' THEN shares ELSE -shares END) AS total_shares,
-            SUM(CASE WHEN type='buy' THEN shares * price_eur ELSE 0 END) /
-                NULLIF(SUM(CASE WHEN type='buy' THEN shares ELSE 0 END), 0) AS avg_buy_price_eur
+            SUM(CASE WHEN type='buy' THEN shares::DOUBLE ELSE -shares::DOUBLE END) AS total_shares,
+            SUM(CASE WHEN type='buy' THEN shares::DOUBLE * price_eur::DOUBLE ELSE 0.0 END) /
+                NULLIF(SUM(CASE WHEN type='buy' THEN shares::DOUBLE ELSE 0.0 END), 0) AS avg_buy_price_eur
         FROM transactions
         GROUP BY asset_id
-        HAVING SUM(CASE WHEN type='buy' THEN shares ELSE -shares END) > 0.000001
+        HAVING SUM(CASE WHEN type='buy' THEN shares::DOUBLE ELSE -shares::DOUBLE END) > 0.000001
     ),
     latest_prices AS (
-        SELECT DISTINCT ON (asset_id) asset_id, price_eur, date
+        SELECT DISTINCT ON (asset_id) asset_id, price_eur::DOUBLE AS price_eur, date
         FROM prices ORDER BY asset_id, date DESC
     ),
     joined AS (
@@ -350,23 +350,23 @@ def get_chart_data(
         SELECT
             t.asset_id,
             d.date AS price_date,
-            SUM(CASE WHEN t.type='buy' AND t.date <= d.date THEN t.shares
-                     WHEN t.type='sell' AND t.date <= d.date THEN -t.shares
-                     ELSE 0 END) AS shares_held
+            SUM(CASE WHEN t.type='buy' AND t.date <= d.date THEN t.shares::DOUBLE
+                     WHEN t.type='sell' AND t.date <= d.date THEN -t.shares::DOUBLE
+                     ELSE 0.0 END) AS shares_held
         FROM date_spine d
         CROSS JOIN (SELECT DISTINCT asset_id FROM transactions) assets
         JOIN transactions t ON t.asset_id = assets.asset_id
         GROUP BY t.asset_id, d.date
-        HAVING SUM(CASE WHEN t.type='buy' AND t.date <= d.date THEN t.shares
-                        WHEN t.type='sell' AND t.date <= d.date THEN -t.shares
-                        ELSE 0 END) > 0.000001
+        HAVING SUM(CASE WHEN t.type='buy' AND t.date <= d.date THEN t.shares::DOUBLE
+                        WHEN t.type='sell' AND t.date <= d.date THEN -t.shares::DOUBLE
+                        ELSE 0.0 END) > 0.000001
     ),
     prices_filled AS (
         SELECT
             ch.asset_id,
             ch.price_date,
             ch.shares_held,
-            LAST_VALUE(p.price_eur IGNORE NULLS) OVER (
+            LAST_VALUE(p.price_eur::DOUBLE IGNORE NULLS) OVER (
                 PARTITION BY ch.asset_id
                 ORDER BY ch.price_date
                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
@@ -376,7 +376,7 @@ def get_chart_data(
     )
     SELECT
         price_date AS date,
-        SUM(shares_held * COALESCE(price_eur, 0)) AS value_eur
+        SUM(shares_held * COALESCE(price_eur, 0.0)) AS value_eur
     FROM prices_filled
     WHERE price_eur IS NOT NULL
     GROUP BY price_date
