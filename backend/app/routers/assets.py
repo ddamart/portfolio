@@ -39,6 +39,7 @@ _SUFFIX_TO_MIC = {
     ".L":  "XLON",
     ".ST": "XSTO",
     ".PA": "XPAR",
+    ".HE": "XHEL",
     ".T":  "XTKS",
     ".TO": "XTSE",
     ".V":  "XTSX",
@@ -53,6 +54,7 @@ _ISIN_COUNTRY_TO_MIC: dict[str, str] = {
     "US": "XNAS",
     "SE": "XSTO",
     "FR": "XPAR",
+    "FI": "XHEL",
     "JP": "XTKS",
     "CA": "XTSE",
 }

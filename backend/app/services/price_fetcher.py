@@ -523,6 +523,7 @@ _OPENFIGI_EXCH_TO_SUFFIX: dict[str, str] = {
     "FP": ".PA",
     "SW": ".SW",
     "SS": ".ST",
+    "FH": ".HE",   # Nasdaq Helsinki
     "JT": ".T",    # Tokyo Stock Exchange
     "CT": ".TO",   # Toronto Stock Exchange
     "CV": ".V",    # TSX Venture Exchange
@@ -542,6 +543,7 @@ _ISIN_COUNTRY_PREFERRED_EXCH: dict[str, str] = {
     "IT": "IM",   # Borsa Italiana
     "BE": "BB",   # Euronext Brussels
     "PT": "PL",   # Euronext Lisbon
+    "FI": "FH",   # Nasdaq Helsinki
     "JP": "JT",   # Tokyo Stock Exchange
     "CA": "CT",   # Toronto Stock Exchange
 }
