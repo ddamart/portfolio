@@ -256,9 +256,10 @@ def update_asset(asset_id: int, body: AssetUpdate):
             list(updates.values()) + [asset_id],
         )
 
-    # Ticker is a UNIQUE column — DuckDB implements its UPDATE as DELETE+INSERT,
-    # which trips the FK constraint from transactions/prices → assets.id.
-    # Workaround: snapshot child rows, remove them, update ticker, restore.
+    # DuckDB rewrites UPDATE of UNIQUE-constrained columns as DELETE+INSERT and
+    # fires FK checks on the DELETE before seeing the re-INSERT, causing a false
+    # constraint violation (github.com/duckdb/duckdb/issues/20246).
+    # Workaround: evacuate child rows, update ticker, then restore them.
     if new_ticker is not None:
         tx_rows    = conn.execute("SELECT * FROM transactions WHERE asset_id = ?", [asset_id]).fetchall()
         price_rows = conn.execute("SELECT * FROM prices       WHERE asset_id = ?", [asset_id]).fetchall()
