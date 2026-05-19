@@ -39,10 +39,12 @@ class AssetCreate(BaseModel):
 
 class AssetUpdate(BaseModel):
     name: Optional[str] = None
+    ticker: Optional[str] = None
     isin: Optional[str] = None
     image_url: Optional[str] = None
     manual_price: Optional[bool] = None
     market_id: Optional[int] = None
+    currency: Optional[str] = None
 
     @field_validator('isin')
     @classmethod

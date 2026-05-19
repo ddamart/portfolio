@@ -238,11 +238,47 @@ def update_asset(asset_id: int, body: AssetUpdate):
         if not conn.execute("SELECT id FROM markets WHERE id = ?", [updates["market_id"]]).fetchone():
             raise HTTPException(status_code=422, detail=f"market_id {updates['market_id']} does not exist")
 
-    set_clause = ", ".join(f"{k} = ?" for k in updates)
-    conn.execute(
-        f"UPDATE assets SET {set_clause} WHERE id = ?",
-        list(updates.values()) + [asset_id],
-    )
+    new_ticker = None
+    if "ticker" in updates and updates["ticker"] is not None:
+        updates["ticker"] = updates["ticker"].upper()
+        new_ticker = updates.pop("ticker")  # handle separately — see below
+        conflict = conn.execute(
+            "SELECT id FROM assets WHERE ticker = ? AND id != ?", [new_ticker, asset_id]
+        ).fetchone()
+        if conflict:
+            raise HTTPException(status_code=409, detail=f"Ticker '{new_ticker}' already used by another asset")
+
+    # Update all non-ticker fields first
+    if updates:
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        conn.execute(
+            f"UPDATE assets SET {set_clause} WHERE id = ?",
+            list(updates.values()) + [asset_id],
+        )
+
+    # Ticker is a UNIQUE column — DuckDB implements its UPDATE as DELETE+INSERT,
+    # which trips the FK constraint from transactions/prices → assets.id.
+    # Workaround: snapshot child rows, remove them, update ticker, restore.
+    if new_ticker is not None:
+        tx_rows    = conn.execute("SELECT * FROM transactions WHERE asset_id = ?", [asset_id]).fetchall()
+        price_rows = conn.execute("SELECT * FROM prices       WHERE asset_id = ?", [asset_id]).fetchall()
+
+        conn.execute("DELETE FROM transactions WHERE asset_id = ?", [asset_id])
+        conn.execute("DELETE FROM prices       WHERE asset_id = ?", [asset_id])
+        conn.execute("UPDATE assets SET ticker = ? WHERE id = ?", [new_ticker, asset_id])
+
+        for row in tx_rows:
+            conn.execute(
+                "INSERT INTO transactions (id, asset_id, type, broker, shares, price, price_eur, "
+                "currency, commission, commission_currency, commission_eur, date, notes, "
+                "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                list(row),
+            )
+        for row in price_rows:
+            conn.execute(
+                "INSERT INTO prices (asset_id, date, price, currency, price_eur) VALUES (?,?,?,?,?)",
+                list(row),
+            )
 
     row = conn.execute(f"SELECT {_ASSET_COLS} FROM assets WHERE id = ?", [asset_id]).fetchone()
     return _row_to_out(row)

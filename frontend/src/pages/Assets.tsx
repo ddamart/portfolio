@@ -8,6 +8,8 @@ import { ManualPriceModal } from '../components/ManualPriceModal'
 
 interface EditDraft {
   name: string
+  ticker: string
+  currency: string
   isin: string
   market_id: number | null
   manual_price: boolean
@@ -21,6 +23,8 @@ function EditModal({
 }) {
   const [draft, setDraft] = useState<EditDraft>({
     name: asset.name,
+    ticker: asset.ticker,
+    currency: asset.currency,
     isin: asset.isin ?? '',
     market_id: asset.market_id,
     manual_price: asset.manual_price,
@@ -51,6 +55,8 @@ function EditModal({
     try {
       await assetsApi.update(asset.id, {
         name: draft.name || undefined,
+        ticker: draft.ticker.trim().toUpperCase() || undefined,
+        currency: draft.currency || undefined,
         isin: draft.isin.trim().toUpperCase() || null,
         market_id: draft.market_id,
         manual_price: draft.manual_price,
@@ -99,6 +105,18 @@ function EditModal({
             </div>
             <input value={draft.name} onChange={e => setDraft(d => ({ ...d, name: e.target.value }))}
               className={inputCls} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={labelCls}>Ticker</label>
+              <input value={draft.ticker} onChange={e => setDraft(d => ({ ...d, ticker: e.target.value.toUpperCase() }))}
+                className={`${inputCls} font-mono`} placeholder="SOI.PA" />
+            </div>
+            <div>
+              <label className={labelCls}>Divisa</label>
+              <input value={draft.currency} onChange={e => setDraft(d => ({ ...d, currency: e.target.value.toUpperCase() }))}
+                className={`${inputCls} font-mono`} maxLength={3} placeholder="EUR" />
+            </div>
           </div>
           <div>
             <label className={labelCls}>ISIN</label>

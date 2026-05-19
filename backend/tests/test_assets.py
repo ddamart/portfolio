@@ -136,6 +136,32 @@ class TestUpdateAsset:
         r = client.put(f"/api/assets/{asset['id']}", json={})
         assert r.status_code == 400
 
+    def test_update_ticker(self, client):
+        """Changing ticker updates the stored value (used for price lookup)."""
+        asset = create_asset(client, ticker="SOH1")
+        r = client.put(f"/api/assets/{asset['id']}", json={"ticker": "SOI.PA"})
+        assert r.status_code == 200
+        assert r.json()["ticker"] == "SOI.PA"
+
+    def test_update_ticker_with_transactions_preserved(self, client):
+        """Renaming ticker while transactions exist must keep all transactions."""
+        asset = create_asset(client, ticker="SOH1")
+        create_fx_rate(client, "USD", 0.92)
+        create_buy(client, asset["id"])
+        r = client.put(f"/api/assets/{asset['id']}", json={"ticker": "SOI.PA", "name": "Soitec"})
+        assert r.status_code == 200
+        # Transactions still reference the asset
+        txs = client.get("/api/transactions").json()
+        assert len(txs) == 1
+        assert txs[0]["asset_ticker"] == "SOI.PA"
+
+    def test_update_ticker_duplicate_rejected(self, client):
+        """Can't rename to a ticker already used by another asset."""
+        create_asset(client, ticker="AAPL", name="Apple")
+        asset2 = create_asset(client, ticker="MSFT", name="Microsoft")
+        r = client.put(f"/api/assets/{asset2['id']}", json={"ticker": "AAPL"})
+        assert r.status_code == 409
+
 
 class TestDeleteAsset:
     def test_delete_asset_no_transactions(self, client):
