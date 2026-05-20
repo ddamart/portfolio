@@ -149,11 +149,6 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
       cell: info => {
         const row = info.row.original
         const isEur = row.currency === 'EUR'
-        if (hasPeriod) {
-          if (row.period_invested_eur == null)
-            return <span className="text-gray-400">—</span>
-          return <div className="font-medium">{formatEur(row.period_invested_eur)}</div>
-        }
         const investedEur = row.total_shares * row.avg_buy_price_eur
         const investedNative = row.total_shares * row.avg_buy_price
         return (
