@@ -154,12 +154,58 @@ def get_holdings(
                 allocation_pct=float(row[19]),
             )
         )
+
+    # Per-asset Modified Dietz performance when a period start date is known
+    if date_from and result:
+        period_data = _compute_period_holding_data(
+            conn, result, date_from, date_to or date.today()
+        )
+        result = [h.model_copy(update=period_data.get(h.asset_id, {})) for h in result]
+
     return result
 
 
-def get_realized_pnl(conn: duckdb.DuckDBPyConnection) -> dict:
+def get_value_at_date(conn: duckdb.DuckDBPyConnection, target_date: date) -> float:
+    """Portfolio market value as of target_date using the last price on or before that date."""
+    row = conn.execute("""
+    WITH holdings_at AS (
+        SELECT
+            asset_id,
+            SUM(CASE WHEN type='buy'  AND date <= ? THEN  shares::DOUBLE
+                     WHEN type='sell' AND date <= ? THEN -shares::DOUBLE
+                     ELSE 0.0 END) AS shares_held
+        FROM transactions
+        GROUP BY asset_id
+        HAVING SUM(CASE WHEN type='buy'  AND date <= ? THEN  shares::DOUBLE
+                        WHEN type='sell' AND date <= ? THEN -shares::DOUBLE
+                        ELSE 0.0 END) > 0.000001
+    ),
+    price_asof AS (
+        SELECT DISTINCT ON (asset_id)
+            asset_id, price_eur::DOUBLE AS price_eur
+        FROM prices
+        WHERE date <= ?
+        ORDER BY asset_id, date DESC
+    )
+    SELECT COALESCE(SUM(h.shares_held * p.price_eur), 0.0)
+    FROM holdings_at h
+    JOIN price_asof p ON p.asset_id = h.asset_id
+    """, [target_date, target_date, target_date, target_date, target_date]).fetchone()
+    return float(row[0]) if row and row[0] is not None else 0.0
+
+
+def get_realized_pnl(
+    conn: duckdb.DuckDBPyConnection,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+) -> dict:
     """
     Compute realized P&L using the running Average Cost (AVCO) method.
+
+    When date_from / date_to are provided only sells within that window are
+    counted towards the P&L figures; the AVCO cost basis is still built from
+    all historical transactions (including those before the window) so the
+    per-share cost is always correct.
 
     Two figures returned:
     - realized_pnl_eur / _pct  : price-only gain (no commissions)
@@ -167,7 +213,7 @@ def get_realized_pnl(conn: duckdb.DuckDBPyConnection) -> dict:
       are folded into the AVCO cost basis; sell commissions are deducted on exit.
     """
     rows = conn.execute("""
-        SELECT asset_id, type, shares, price_eur, commission_eur
+        SELECT asset_id, type, shares, price_eur, commission_eur, date
         FROM transactions
         ORDER BY asset_id, date, id
     """).fetchall()
@@ -181,10 +227,12 @@ def get_realized_pnl(conn: duckdb.DuckDBPyConnection) -> dict:
     cost_of_sold_net = 0.0
     total_invested_ever = 0.0
 
-    for asset_id, tx_type, shares, price_eur, commission_eur in rows:
+    for asset_id, tx_type, shares, price_eur, commission_eur, tx_date in rows:
         shares = float(shares)
         price_eur = float(price_eur)
         commission_eur = float(commission_eur)
+        tx_date = tx_date if isinstance(tx_date, date) else tx_date.date()
+
         cur_shares = shares_held.get(asset_id, 0.0)
         cur_avg = avg_costs.get(asset_id, 0.0)
         cur_avg_net = avg_costs_net.get(asset_id, 0.0)
@@ -197,14 +245,21 @@ def get_realized_pnl(conn: duckdb.DuckDBPyConnection) -> dict:
             shares_held[asset_id] = total_shares
             total_invested_ever += shares * price_eur
         else:
-            gain = shares * (price_eur - cur_avg)
-            realized_pnl += gain
-            cost_of_sold += shares * cur_avg
-            # Net: use commission-adjusted AVCO and subtract sell commission
-            gain_net = shares * (price_eur - cur_avg_net) - commission_eur
-            realized_pnl_net += gain_net
-            cost_of_sold_net += shares * cur_avg_net
+            # Always advance AVCO state for sells (even outside the window)
             shares_held[asset_id] = max(cur_shares - shares, 0.0)
+
+            in_window = (
+                (date_from is None or tx_date >= date_from) and
+                (date_to   is None or tx_date <= date_to)
+            )
+            if in_window:
+                gain = shares * (price_eur - cur_avg)
+                realized_pnl += gain
+                cost_of_sold += shares * cur_avg
+                # Net: use commission-adjusted AVCO and subtract sell commission
+                gain_net = shares * (price_eur - cur_avg_net) - commission_eur
+                realized_pnl_net += gain_net
+                cost_of_sold_net += shares * cur_avg_net
 
     realized_pct = (realized_pnl / cost_of_sold * 100) if cost_of_sold > 0 else 0.0
     realized_net_pct = (realized_pnl_net / cost_of_sold_net * 100) if cost_of_sold_net > 0 else 0.0
@@ -217,7 +272,186 @@ def get_realized_pnl(conn: duckdb.DuckDBPyConnection) -> dict:
     }
 
 
-def get_summary(conn: duckdb.DuckDBPyConnection) -> PortfolioSummary:
+def _compute_period_holding_data(
+    conn: duckdb.DuckDBPyConnection,
+    holdings: list,
+    date_from: date,
+    date_to: date,
+) -> dict:
+    """
+    Per-asset Modified Dietz performance for [date_from, date_to].
+
+    Returns dict mapping asset_id → partial HoldingRow field overrides:
+      period_start_price, period_start_price_eur, period_start_value_eur,
+      period_gain_eur, period_gain_pct.
+    """
+    start_date = date_from - timedelta(days=1)
+    D = max((date_to - date_from).days, 1)
+
+    # V_ini per asset: shares held at end of start_date × ASOF price at start_date
+    ini_rows = conn.execute("""
+    WITH holdings_at AS (
+        SELECT
+            asset_id,
+            SUM(CASE WHEN type='buy'  AND date <= ? THEN  shares::DOUBLE
+                     WHEN type='sell' AND date <= ? THEN -shares::DOUBLE
+                     ELSE 0.0 END) AS shares_held
+        FROM transactions
+        GROUP BY asset_id
+        HAVING SUM(CASE WHEN type='buy'  AND date <= ? THEN  shares::DOUBLE
+                        WHEN type='sell' AND date <= ? THEN -shares::DOUBLE
+                        ELSE 0.0 END) > 0.000001
+    ),
+    price_asof AS (
+        SELECT DISTINCT ON (asset_id)
+            asset_id,
+            price::DOUBLE     AS price,
+            price_eur::DOUBLE AS price_eur
+        FROM prices
+        WHERE date <= ?
+        ORDER BY asset_id, date DESC
+    )
+    SELECT h.asset_id, p.price, p.price_eur, h.shares_held * p.price_eur AS value_eur
+    FROM holdings_at h
+    JOIN price_asof p ON p.asset_id = h.asset_id
+    """, [start_date, start_date, start_date, start_date, start_date]).fetchall()
+
+    ini_by_asset: dict[int, dict] = {}
+    for row in ini_rows:
+        ini_by_asset[int(row[0])] = {
+            "price":     float(row[1]),
+            "price_eur": float(row[2]),
+            "value_eur": float(row[3]),
+        }
+
+    # Cash flows per asset during [date_from, date_to]
+    tx_rows = conn.execute("""
+        SELECT asset_id, type, shares::DOUBLE, price_eur::DOUBLE, commission_eur::DOUBLE, date
+        FROM transactions
+        WHERE date >= ? AND date <= ?
+        ORDER BY asset_id, date, id
+    """, [date_from, date_to]).fetchall()
+
+    from collections import defaultdict
+    cfs_by_asset: dict[int, list] = defaultdict(list)
+    for row in tx_rows:
+        asset_id = int(row[0])
+        tx_type, shares, price_eur, commission_eur = row[1], float(row[2]), float(row[3]), float(row[4])
+        tx_date = row[5] if isinstance(row[5], date) else row[5].date()
+        cfs_by_asset[asset_id].append((tx_type, shares, price_eur, commission_eur, tx_date))
+
+    result: dict[int, dict] = {}
+    for h in holdings:
+        asset_id = h.asset_id
+
+        if h.value_eur is None:
+            result[asset_id] = {
+                "period_start_value_eur": None,
+                "period_invested_eur": None,
+                "period_avg_price_eur": None,
+                "period_gain_eur": None,
+                "period_gain_pct": None,
+            }
+            continue
+
+        ini = ini_by_asset.get(asset_id)
+        v_ini = ini["value_eur"] if ini else 0.0
+        v_fin = float(h.value_eur)
+
+        cf_total = 0.0
+        weighted_cf = 0.0
+        for tx_type, shares, price_eur, commission_eur, tx_date in cfs_by_asset.get(asset_id, []):
+            di = (tx_date - date_from).days
+            wi = (D - di) / D
+            cf = (shares * price_eur + commission_eur) if tx_type == "buy" \
+                 else -(shares * price_eur - commission_eur)
+            cf_total += cf
+            weighted_cf += cf * wi
+
+        # period_invested: capital at play over the period (start value + net cash flows)
+        # This equals V_ini + buy_cost − sell_proceeds, consistent with Modified Dietz gain:
+        #   period_gain_eur = v_fin − period_invested_eur
+        period_invested = v_ini + cf_total
+        period_avg_price = (period_invested / h.total_shares) if h.total_shares > 0.000001 else None
+
+        denominator = v_ini + weighted_cf
+        gain_eur = v_fin - period_invested
+        gain_pct = (gain_eur / denominator * 100) if abs(denominator) > 0.01 else 0.0
+
+        result[asset_id] = {
+            "period_start_value_eur": ini["value_eur"] if ini else None,
+            "period_invested_eur": period_invested,
+            "period_avg_price_eur": period_avg_price,
+            "period_gain_eur": gain_eur,
+            "period_gain_pct": gain_pct,
+        }
+
+    return result
+
+
+def get_modified_dietz(
+    conn: duckdb.DuckDBPyConnection,
+    date_from: date,
+    date_to: date,
+    current_value: float,
+) -> dict:
+    """
+    Modified Dietz performance measurement for [date_from, date_to].
+
+    V_ini  = portfolio value at close of (date_from − 1), i.e. before the period opens.
+    V_fin  = current_value (today's portfolio value, passed in from get_summary).
+    CF_i   = external cash flow on date i:
+               buy  → positive (investor injects capital)
+               sell → negative (investor withdraws capital)
+             Commissions are folded in (increase cost of buys, reduce proceeds of sells).
+    W_i    = (D − d_i) / D  — fraction of the period still remaining when CF_i occurred.
+
+    R% = (V_fin − V_ini − ΣCF) / (V_ini + Σ(CF_i × W_i))
+    Gain€ = V_fin − V_ini − ΣCF  (pure market contribution, net of capital movements)
+    """
+    start_date = date_from - timedelta(days=1)
+    V_ini = get_value_at_date(conn, start_date)
+    V_fin = current_value
+    D = max((date_to - date_from).days, 1)  # avoid /0 on same-day periods
+
+    rows = conn.execute("""
+        SELECT type, shares::DOUBLE, price_eur::DOUBLE, commission_eur::DOUBLE, date
+        FROM transactions
+        WHERE date >= ? AND date <= ?
+        ORDER BY date
+    """, [date_from, date_to]).fetchall()
+
+    cf_total = 0.0
+    weighted_cf = 0.0
+
+    for tx_type, shares, price_eur, commission_eur, tx_date in rows:
+        tx_date = tx_date if isinstance(tx_date, date) else tx_date.date()
+        di = (tx_date - date_from).days
+        wi = (D - di) / D
+
+        cf = (shares * price_eur + commission_eur) if tx_type == "buy" \
+             else -(shares * price_eur - commission_eur)
+
+        cf_total += cf
+        weighted_cf += cf * wi
+
+    denominator = V_ini + weighted_cf
+    gain_eur = V_fin - V_ini - cf_total
+    return_pct = (gain_eur / denominator * 100) if abs(denominator) > 0.01 else 0.0
+
+    return {
+        "period_start_value_eur": V_ini,
+        "period_return_eur": gain_eur,
+        "period_return_pct": return_pct,
+    }
+
+
+def get_summary(
+    conn: duckdb.DuckDBPyConnection,
+    period: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+) -> PortfolioSummary:
     row = conn.execute("""
     WITH holdings AS (
         SELECT
@@ -249,7 +483,16 @@ def get_summary(conn: duckdb.DuckDBPyConnection) -> PortfolioSummary:
     FROM joined
     """).fetchone()
 
-    realized = get_realized_pnl(conn)
+    # Resolve date_from from period string if not provided explicitly
+    is_period = period and period not in ("all", "custom")
+    if is_period and not date_from:
+        date_from, date_to = _period_to_date_range(period)
+
+    # Realized P&L: period-filtered when a non-"all" period is active
+    if is_period and date_from:
+        realized = get_realized_pnl(conn, date_from=date_from, date_to=date_to)
+    else:
+        realized = get_realized_pnl(conn)
 
     # fetchone() returns None if the inner query has zero rows (no prices loaded yet)
     if row is None or row[0] is None:
@@ -267,12 +510,25 @@ def get_summary(conn: duckdb.DuckDBPyConnection) -> PortfolioSummary:
     pnl = float(row[2])
     pnl_pct = (pnl / total_invested * 100) if total_invested > 0 else 0.0
 
+    # Period return using Modified Dietz (accounts for capital injections/withdrawals)
+    period_start_value: Optional[float] = None
+    period_return_eur: Optional[float] = None
+    period_return_pct: Optional[float] = None
+    if is_period and date_from:
+        md = get_modified_dietz(conn, date_from, date_to or date.today(), total_value)
+        period_start_value = md["period_start_value_eur"]
+        period_return_eur = md["period_return_eur"]
+        period_return_pct = md["period_return_pct"]
+
     return PortfolioSummary(
         total_value_eur=total_value,
         total_invested_eur=total_invested,
         total_pnl_eur=pnl,
         total_pnl_pct=pnl_pct,
         last_updated=row[3],
+        period_start_value_eur=period_start_value,
+        period_return_eur=period_return_eur,
+        period_return_pct=period_return_pct,
         **realized,
     )
 

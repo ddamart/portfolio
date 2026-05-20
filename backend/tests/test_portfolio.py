@@ -196,4 +196,81 @@ class TestPortfolioChart:
             assert point["date"] <= "2024-07-01"
 
 
+class TestModifiedDietz:
+    """
+    Verify the Modified Dietz formula via the /api/portfolio/summary?period= endpoint.
+
+    Key invariant: period_return_eur should reflect only market gains, not capital
+    injections, so it equals zero when prices don't move regardless of how much
+    new money is added.
+    """
+
+    def test_no_capital_movement_pure_price_gain(self, client):
+        """100 % price gain, no new buys → period_return_eur == unrealised P&L."""
+        asset = create_asset(client, ticker="X", currency="EUR")
+        # Buy on 2025-12-31 (before YTD 2026 period)
+        create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR",
+                   date="2025-12-31", broker="degiro")
+        seed_price(asset["id"], "2025-12-31", 100.0)   # V_ini reference price
+        # Price rises to 120 by period end (in 2026)
+        seed_price(asset["id"], "2026-05-01", 120.0)
+
+        r = client.get("/api/portfolio/summary?period=ytd")
+        data = r.json()
+        # No transactions in YTD → CF = 0, so Modified Dietz gain == simple price gain
+        assert data["period_return_eur"] == pytest.approx(200.0, abs=1.0)
+        assert data["period_return_pct"] == pytest.approx(20.0, abs=0.5)
+
+    def test_new_investment_does_not_inflate_gain(self, client):
+        """
+        Adding €10 000 of new capital mid-period must NOT count as performance gain.
+        With flat prices (no market movement), period_return_eur should be ~0.
+        """
+        asset = create_asset(client, ticker="FLAT", currency="EUR")
+        # Existing holding before the YTD 2026 period
+        create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR",
+                   date="2025-12-31", broker="degiro")
+        seed_price(asset["id"], "2025-12-31", 100.0)
+
+        # Large new purchase mid-period at the same price (no price change)
+        create_buy(client, asset["id"], shares=100, price=100.0, currency="EUR",
+                   date="2026-03-01", broker="degiro")
+        seed_price(asset["id"], "2026-03-01", 100.0)
+        seed_price(asset["id"], "2026-05-01", 100.0)  # price still flat
+
+        r = client.get("/api/portfolio/summary?period=ytd")
+        data = r.json()
+        # Market didn't move → real return is zero; new capital must not inflate it
+        assert abs(data["period_return_eur"]) < 5.0, (
+            f"New investment inflated period_return_eur to {data['period_return_eur']}"
+        )
+        assert abs(data["period_return_pct"]) < 0.5
+
+    def test_period_return_equals_zero_when_flat(self, client):
+        """No transactions in period, price unchanged → 0 % return."""
+        asset = create_asset(client, ticker="Z", currency="EUR")
+        create_buy(client, asset["id"], shares=5, price=200.0, currency="EUR",
+                   date="2025-12-31", broker="degiro")
+        seed_price(asset["id"], "2025-12-31", 200.0)
+        seed_price(asset["id"], "2026-05-01", 200.0)
+
+        r = client.get("/api/portfolio/summary?period=ytd")
+        data = r.json()
+        assert abs(data["period_return_eur"]) < 1.0
+        assert abs(data["period_return_pct"]) < 0.1
+
+    def test_period_fields_absent_for_all(self, client):
+        """When period='all' or not provided, period_return fields must be None."""
+        asset = create_asset(client, ticker="A", currency="EUR")
+        create_buy(client, asset["id"], shares=1, price=100.0, currency="EUR",
+                   date="2025-01-02", broker="degiro")
+        seed_price(asset["id"], "2025-01-02", 100.0)
+
+        for url in ["/api/portfolio/summary", "/api/portfolio/summary?period=all"]:
+            data = client.get(url).json()
+            assert data["period_return_eur"] is None, f"Expected None for {url}"
+            assert data["period_return_pct"] is None
+            assert data["period_start_value_eur"] is None
+
+
 import pytest

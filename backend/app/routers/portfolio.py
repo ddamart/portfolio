@@ -10,8 +10,12 @@ router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 
 
 @router.get("/summary", response_model=PortfolioSummary)
-def portfolio_summary():
-    return get_summary(get_db())
+def portfolio_summary(
+    period: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+):
+    return get_summary(get_db(), period=period, date_from=date_from, date_to=date_to)
 
 
 @router.get("/holdings", response_model=list[HoldingRow])

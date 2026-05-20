@@ -4,13 +4,27 @@ import { portfolioApi } from '../api/client'
 import { useRefresh } from '../contexts/RefreshContext'
 import { formatEur, formatPct, pnlClass } from '../utils/format'
 
-export function PortfolioSummaryCard() {
+const PERIOD_LABELS: Record<string, string> = {
+  '1d': '1D', '1w': '1S', '1m': '1M', '6m': '6M',
+  'ytd': 'YTD', '1y': '1A', '5y': '5A', 'all': 'Total', 'custom': 'Período',
+}
+
+interface Props {
+  period: string
+  dateFrom: string
+  dateTo: string
+}
+
+export function PortfolioSummaryCard({ period, dateFrom, dateTo }: Props) {
   const [summary, setSummary] = useState<PortfolioSummary | null>(null)
   const { lastRefreshAt } = useRefresh()
 
   useEffect(() => {
-    portfolioApi.summary().then(setSummary).catch(() => {})
-  }, [lastRefreshAt])
+    const params: Record<string, string> = period === 'custom'
+      ? { ...(dateFrom && { date_from: dateFrom }), ...(dateTo && { date_to: dateTo }) }
+      : { period }
+    portfolioApi.summary(params).then(setSummary).catch(() => {})
+  }, [period, dateFrom, dateTo, lastRefreshAt])
 
   if (!summary) {
     return (
@@ -29,7 +43,9 @@ export function PortfolioSummaryCard() {
     )
   }
 
+  const hasPeriod = summary.period_return_eur !== null
   const hasRealized = summary.realized_pnl_eur !== 0 || summary.total_invested_ever_eur > 0
+  const periodLabel = PERIOD_LABELS[period] ?? 'Período'
 
   return (
     <div className="space-y-3">
@@ -43,12 +59,21 @@ export function PortfolioSummaryCard() {
           label="Invertido (en cartera)"
           value={formatEur(summary.total_invested_eur)}
         />
-        <StatCard
-          label="Ganancia / Pérdida"
-          value={formatEur(summary.total_pnl_eur)}
-          sub={formatPct(summary.total_pnl_pct)}
-          valueClass={pnlClass(summary.total_pnl_eur)}
-        />
+        {hasPeriod ? (
+          <StatCard
+            label={`Rendimiento ${periodLabel}`}
+            value={formatEur(summary.period_return_eur!)}
+            sub={formatPct(summary.period_return_pct!)}
+            valueClass={pnlClass(summary.period_return_eur!)}
+          />
+        ) : (
+          <StatCard
+            label="Ganancia / Pérdida"
+            value={formatEur(summary.total_pnl_eur)}
+            sub={formatPct(summary.total_pnl_pct)}
+            valueClass={pnlClass(summary.total_pnl_eur)}
+          />
+        )}
       </div>
       {hasRealized && (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -59,14 +84,14 @@ export function PortfolioSummaryCard() {
             compact
           />
           <StatCard
-            label="Ganancia realizada"
+            label={hasPeriod ? `Ganancia realizada ${periodLabel}` : 'Ganancia realizada'}
             value={formatEur(summary.realized_pnl_eur)}
             sub={formatPct(summary.realized_pnl_pct)}
             valueClass={pnlClass(summary.realized_pnl_eur)}
             compact
           />
           <StatCard
-            label="Ganancia realizada (neta)"
+            label={hasPeriod ? `G. realizada neta ${periodLabel}` : 'Ganancia realizada (neta)'}
             value={formatEur(summary.realized_pnl_net_eur)}
             sub={`${formatPct(summary.realized_pnl_net_pct)} · post comisiones`}
             valueClass={pnlClass(summary.realized_pnl_net_eur)}
