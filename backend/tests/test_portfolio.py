@@ -1,4 +1,5 @@
 """Tests for /api/portfolio endpoints."""
+import pytest
 from .conftest import create_asset, create_buy, create_fx_rate
 import app.database as db_module
 
@@ -196,4 +197,157 @@ class TestPortfolioChart:
             assert point["date"] <= "2024-07-01"
 
 
-import pytest
+class TestModifiedDietz:
+    """
+    Verify the Modified Dietz formula via the /api/portfolio/summary?period= endpoint.
+
+    Key invariant: period_return_eur should reflect only market gains, not capital
+    injections, so it equals zero when prices don't move regardless of how much
+    new money is added.
+    """
+
+    def test_no_capital_movement_pure_price_gain(self, client):
+        """100 % price gain, no new buys → period_return_eur == unrealised P&L."""
+        asset = create_asset(client, ticker="X", currency="EUR")
+        # Buy on 2025-12-31 (before YTD 2026 period)
+        create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR",
+                   date="2025-12-31", broker="degiro")
+        seed_price(asset["id"], "2025-12-31", 100.0)   # V_ini reference price
+        # Price rises to 120 by period end (in 2026)
+        seed_price(asset["id"], "2026-05-01", 120.0)
+
+        r = client.get("/api/portfolio/summary?period=ytd")
+        data = r.json()
+        # No transactions in YTD → CF = 0, so Modified Dietz gain == simple price gain
+        assert data["period_return_eur"] == pytest.approx(200.0, abs=1.0)
+        assert data["period_return_pct"] == pytest.approx(20.0, abs=0.5)
+
+    def test_new_investment_does_not_inflate_gain(self, client):
+        """
+        Adding €10 000 of new capital mid-period must NOT count as performance gain.
+        With flat prices (no market movement), period_return_eur should be ~0.
+        """
+        asset = create_asset(client, ticker="FLAT", currency="EUR")
+        # Existing holding before the YTD 2026 period
+        create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR",
+                   date="2025-12-31", broker="degiro")
+        seed_price(asset["id"], "2025-12-31", 100.0)
+
+        # Large new purchase mid-period at the same price (no price change)
+        create_buy(client, asset["id"], shares=100, price=100.0, currency="EUR",
+                   date="2026-03-01", broker="degiro")
+        seed_price(asset["id"], "2026-03-01", 100.0)
+        seed_price(asset["id"], "2026-05-01", 100.0)  # price still flat
+
+        r = client.get("/api/portfolio/summary?period=ytd")
+        data = r.json()
+        # Market didn't move → real return is zero; new capital must not inflate it
+        assert abs(data["period_return_eur"]) < 5.0, (
+            f"New investment inflated period_return_eur to {data['period_return_eur']}"
+        )
+        assert abs(data["period_return_pct"]) < 0.5
+
+    def test_period_return_equals_zero_when_flat(self, client):
+        """No transactions in period, price unchanged → 0 % return."""
+        asset = create_asset(client, ticker="Z", currency="EUR")
+        create_buy(client, asset["id"], shares=5, price=200.0, currency="EUR",
+                   date="2025-12-31", broker="degiro")
+        seed_price(asset["id"], "2025-12-31", 200.0)
+        seed_price(asset["id"], "2026-05-01", 200.0)
+
+        r = client.get("/api/portfolio/summary?period=ytd")
+        data = r.json()
+        assert abs(data["period_return_eur"]) < 1.0
+        assert abs(data["period_return_pct"]) < 0.1
+
+
+class TestPeriodHoldingPct:
+    """period_gain_pct must be simple ROI: gain_eur / period_invested, not Modified Dietz."""
+
+    def test_period_gain_pct_simple_roi(self, client):
+        """gain_pct = gain_eur / period_invested (not time-weighted)."""
+        asset = create_asset(client, ticker="SIMPLEROI", currency="EUR")
+        # Existing holding before the YTD 2026 period
+        create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR",
+                   date="2025-12-31", broker="degiro")
+        seed_price(asset["id"], "2025-12-31", 100.0)   # V_ini = 1 000
+        # Large buy very late in the period (Modified Dietz would inflate %)
+        create_buy(client, asset["id"], shares=90, price=100.0, currency="EUR",
+                   date="2026-05-10", broker="degiro")
+        seed_price(asset["id"], "2026-05-10", 100.0)
+        seed_price(asset["id"], "2026-05-19", 110.0)   # 10 % price gain
+
+        rows = client.get("/api/portfolio/holdings?period=ytd").json()
+        row = next(r for r in rows if r["ticker"] == "SIMPLEROI")
+
+        # period_invested = 1 000 + 9 000 = 10 000
+        # gain_eur = 100 × 110 − 10 000 = 1 000
+        # simple ROI = 1 000 / 10 000 = 10 %
+        assert row["period_gain_eur"] == pytest.approx(1000.0, abs=5.0)
+        assert row["period_gain_pct"] == pytest.approx(10.0, abs=0.5)
+
+    def test_period_fields_absent_for_all(self, client):
+        """When period='all' or not provided, period_return fields must be None."""
+        asset = create_asset(client, ticker="A", currency="EUR")
+        create_buy(client, asset["id"], shares=1, price=100.0, currency="EUR",
+                   date="2025-01-02", broker="degiro")
+        seed_price(asset["id"], "2025-01-02", 100.0)
+
+        for url in ["/api/portfolio/summary", "/api/portfolio/summary?period=all"]:
+            data = client.get(url).json()
+            assert data["period_return_eur"] is None, f"Expected None for {url}"
+            assert data["period_return_pct"] is None
+            assert data["period_start_value_eur"] is None
+
+
+class TestCustomDateRange:
+    """Custom date_from/date_to must use historical prices, not today's."""
+
+    def test_holdings_use_historical_price_at_date_to(self, client):
+        """Holdings query must use prices as of date_to, not today's prices."""
+        asset = create_asset(client, ticker="HIST", currency="EUR")
+        create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR",
+                   date="2025-01-02", broker="degiro")
+        seed_price(asset["id"], "2025-01-02", 100.0)
+        seed_price(asset["id"], "2025-03-01", 110.0)   # price at date_to
+        seed_price(asset["id"], "2025-06-01", 200.0)   # today's price (much higher)
+
+        rows = client.get("/api/portfolio/holdings?date_from=2025-01-02&date_to=2025-03-01").json()
+        assert len(rows) == 1
+        # current_price_eur must be the March 1 price (110), not June price (200)
+        assert abs(rows[0]["current_price_eur"] - 110.0) < 0.5
+
+    def test_summary_modified_dietz_uses_historical_v_fin(self, client):
+        """
+        With a past date_to, period_return must reflect the portfolio value at
+        date_to, not today's value. With flat prices before date_to and a large
+        gain afterwards, the period return for the custom range must be ~0.
+        """
+        asset = create_asset(client, ticker="HIST2", currency="EUR")
+        create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR",
+                   date="2024-12-31", broker="degiro")
+        seed_price(asset["id"], "2024-12-31", 100.0)   # V_ini
+        seed_price(asset["id"], "2025-03-01", 100.0)   # flat at date_to → return ~0
+        seed_price(asset["id"], "2025-06-01", 500.0)   # today: would inflate if used as V_fin
+
+        r = client.get("/api/portfolio/summary?date_from=2025-01-01&date_to=2025-03-01")
+        data = r.json()
+        # Prices flat within the period → return must be ~0, not +4000 €
+        assert abs(data["period_return_eur"]) < 10.0, (
+            f"V_fin leak: period_return_eur={data['period_return_eur']} (should be ~0)"
+        )
+        assert abs(data["period_return_pct"]) < 1.0
+
+    def test_period_gain_uses_historical_price_at_date_to(self, client):
+        """period_gain_eur on holdings must reflect price at date_to, not today."""
+        asset = create_asset(client, ticker="HIST3", currency="EUR")
+        create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR",
+                   date="2024-12-31", broker="degiro")
+        seed_price(asset["id"], "2024-12-31", 100.0)
+        seed_price(asset["id"], "2025-03-01", 120.0)   # +20 % at date_to
+        seed_price(asset["id"], "2025-06-01", 500.0)   # today
+
+        rows = client.get("/api/portfolio/holdings?date_from=2025-01-01&date_to=2025-03-01").json()
+        row = next(r for r in rows if r["ticker"] == "HIST3")
+        # period_gain_eur = 10 × 120 − 10 × 100 = 200  (using March price, not June)
+        assert row["period_gain_eur"] == pytest.approx(200.0, abs=5.0)

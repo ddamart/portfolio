@@ -89,6 +89,12 @@ export interface HoldingRow {
   gain_pct: number | null
   daily_change_pct: number | null
   allocation_pct: number
+  // Period-specific performance (null when period='all')
+  period_start_value_eur: number | null  // V_ini: value before the period opens
+  period_invested_eur: number | null     // V_ini + buy_cost − sell_proceeds
+  period_avg_price_eur: number | null    // period_invested_eur / total_shares
+  period_gain_eur: number | null
+  period_gain_pct: number | null
 }
 
 export interface PortfolioSummary {
@@ -102,6 +108,10 @@ export interface PortfolioSummary {
   total_invested_ever_eur: number
   realized_pnl_net_eur: number
   realized_pnl_net_pct: number
+  // Period-scoped return — null when period='all' or not requested
+  period_start_value_eur: number | null
+  period_return_eur: number | null
+  period_return_pct: number | null
 }
 
 export interface ChartPoint {
@@ -155,6 +165,7 @@ export const assetsApi = {
   update: (id: number, body: { name?: string; ticker?: string; currency?: string; isin?: string | null; market_id?: number | null; manual_price?: boolean; image_url?: string | null }) =>
     api.put<Asset>(`/assets/${id}`, body).then(r => r.data),
   delete: (id: number) => api.delete(`/assets/${id}`),
+  clearPrices: (id: number) => api.delete(`/assets/${id}/prices`),
   setManualPrice: (id: number, price: number, date: string, currency: string) =>
     api.put(`/assets/${id}/price`, null, { params: { price, price_date: date, currency } }).then(r => r.data),
   importPrices: (id: number, rows: { date: string; price: number }[]) =>
@@ -176,7 +187,7 @@ export const transactionsApi = {
 }
 
 export const portfolioApi = {
-  summary: () => api.get<PortfolioSummary>('/portfolio/summary').then(r => r.data),
+  summary: (params?: Record<string, string>) => api.get<PortfolioSummary>('/portfolio/summary', { params }).then(r => r.data),
   holdings: (params?: Record<string, string>) =>
     api.get<HoldingRow[]>('/portfolio/holdings', { params }).then(r => r.data),
   chart: (params?: Record<string, string>) =>

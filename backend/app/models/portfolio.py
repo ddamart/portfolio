@@ -15,6 +15,10 @@ class PortfolioSummary(BaseModel):
     total_invested_ever_eur: float = 0.0
     realized_pnl_net_eur: float = 0.0   # net of all commissions (buy + sell)
     realized_pnl_net_pct: float = 0.0
+    # Period-scoped return — None when period='all' or not provided
+    period_start_value_eur: Optional[float] = None
+    period_return_eur: Optional[float] = None
+    period_return_pct: Optional[float] = None
 
 
 class HoldingRow(BaseModel):
@@ -39,6 +43,12 @@ class HoldingRow(BaseModel):
     gain_pct: Optional[float]
     daily_change_pct: Optional[float]
     allocation_pct: float
+    # Period-specific performance (None when period='all' or no period active)
+    period_start_value_eur: Optional[float] = None  # V_ini: EUR value at period start (before period txns)
+    period_invested_eur: Optional[float] = None     # V_ini + buy_cost − sell_proceeds across the period
+    period_avg_price_eur: Optional[float] = None    # period_invested_eur / total_shares
+    period_gain_eur: Optional[float] = None         # Modified Dietz gain €
+    period_gain_pct: Optional[float] = None         # Modified Dietz %
 
 
 class ChartPoint(BaseModel):
