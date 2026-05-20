@@ -155,7 +155,17 @@ def refresh_single_asset(conn: duckdb.DuckDBPyConnection, asset_id: int) -> int:
     if manual_price:
         return 0
 
-    start, end = _get_fetch_range(conn, id_)
+    # If prices already exist, always fill forward from the last recorded date
+    # regardless of transaction history — this ensures non-portfolio assets get
+    # an incremental update rather than a full backfill from _BACKFILL_FLOOR_DATE.
+    last_row = conn.execute(
+        "SELECT date FROM prices WHERE asset_id = ? ORDER BY date DESC LIMIT 1", [id_]
+    ).fetchone()
+    if last_row:
+        last_date = last_row[0] if isinstance(last_row[0], date) else last_row[0].date()
+        start, end = last_date, date.today()
+    else:
+        start, end = _get_fetch_range(conn, id_)
 
     # GBX (pence) uses the GBP FX rate
     fx_ccy = "GBP" if currency == "GBX" else currency
