@@ -39,6 +39,9 @@ def get_holdings(
     if period and not date_from:
         date_from, date_to = _period_to_date_range(period)
 
+    # latest_date caps price lookups so historical date_to shows correct prices
+    latest_date = date_to or date.today()
+
     # Build transaction filter for date range (affects what's considered "bought by then")
     tx_date_filter = ""
     params: list = []
@@ -50,6 +53,8 @@ def get_holdings(
     if broker:
         broker_filter = "AND t.broker = ?"
         params.append(broker)
+
+    params.append(latest_date)  # for latest_prices WHERE date <= ?
 
     type_filter = ""
     if asset_type:
@@ -75,6 +80,7 @@ def get_holdings(
         SELECT DISTINCT ON (asset_id)
             asset_id, price::DOUBLE AS price, price_eur::DOUBLE AS price_eur, currency, date
         FROM prices
+        WHERE date <= ?
         ORDER BY asset_id, date DESC
     ),
     prev_prices AS (
@@ -519,7 +525,14 @@ def get_summary(
     period_return_eur: Optional[float] = None
     period_return_pct: Optional[float] = None
     if is_period and date_from:
-        md = get_modified_dietz(conn, date_from, date_to or date.today(), total_value)
+        effective_date_to = date_to or date.today()
+        # When the period ends in the past, V_fin must be the historical value at
+        # date_to, not today's portfolio value (which inflates the return figure).
+        if effective_date_to < date.today():
+            v_fin = get_value_at_date(conn, effective_date_to)
+        else:
+            v_fin = total_value
+        md = get_modified_dietz(conn, date_from, effective_date_to, v_fin)
         period_start_value = md["period_start_value_eur"]
         period_return_eur = md["period_return_eur"]
         period_return_pct = md["period_return_pct"]
