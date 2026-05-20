@@ -103,24 +103,6 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
       cell: info => {
         const row = info.row.original
         const isEur = row.currency === 'EUR'
-        if (hasPeriod) {
-          if (row.period_avg_price_eur == null)
-            return <span className="text-gray-400">—</span>
-          // Approximate native-currency cost using the current FX rate
-          const fxRate = (!isEur && row.current_price != null && row.current_price_eur != null && row.current_price_eur > 0)
-            ? row.current_price / row.current_price_eur
-            : null
-          const periodAvgNative = fxRate != null ? row.period_avg_price_eur * fxRate : null
-          return (
-            <div>
-              {periodAvgNative != null
-                ? <><div>{formatNumber(periodAvgNative, 4)} {row.currency}</div>
-                    <div className="text-xs text-gray-400">{formatEur(row.period_avg_price_eur)}</div></>
-                : <div>{formatEur(row.period_avg_price_eur)}</div>
-              }
-            </div>
-          )
-        }
         return (
           <div>
             <div>{formatNumber(row.avg_buy_price, 4)} {row.currency}</div>
