@@ -24,6 +24,8 @@ def refresh_prices(background_tasks: BackgroundTasks):
     return {"ok": True, "message": "Price refresh started"}
 
 
+
+
 @router.get("/fx-rate")
 def fx_rate(currency: str, date: str):
     """Return the EUR rate for a currency on a given date (for form hints).
@@ -43,6 +45,43 @@ def fx_rate(currency: str, date: str):
         if rate is not None:
             return {"rate": rate, "found": True}
         return {"rate": None, "found": False}
+
+
+@router.post("/refresh/{asset_id}/sync")
+def refresh_single_sync(asset_id: int):
+    """Synchronous debug refresh — raw mstarpy call to expose any errors."""
+    import traceback
+    import mstarpy
+    from app.services.price_fetcher import _get_fetch_range, _try_investpy, _get_mstar_session
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT id, ticker, type, currency, manual_price, isin FROM assets WHERE id = ?", [asset_id]
+        ).fetchone()
+        if not row:
+            return {"error": "asset not found"}
+        id_, ticker, type_, currency, manual_price, isin = row
+        start, end = _get_fetch_range(conn, id_)
+
+        investpy_n = _try_investpy(conn, id_, ticker, isin, currency, start, end)
+
+        search_term = isin or ticker
+        session = _get_mstar_session()
+        fund = mstarpy.Funds(term=search_term, pageSize=1, session=session)
+        hist = fund.nav(start_date=start, end_date=end)
+        nav_count = len(hist) if hist else 0
+
+        prices_now = conn.execute("SELECT COUNT(*) FROM prices WHERE asset_id=?", [id_]).fetchone()[0]
+        return {
+            "ticker": ticker, "isin": isin, "start": str(start), "end": str(end),
+            "investpy_n": investpy_n,
+            "fund_name": getattr(fund, "name", None),
+            "fund_isin": getattr(fund, "isin", None),
+            "nav_count": nav_count,
+            "prices_in_db": prices_now,
+        }
+    except Exception as e:
+        return {"error": str(e), "trace": traceback.format_exc()}
 
 
 @router.post("/refresh/{asset_id}")

@@ -13,17 +13,54 @@ Fetch range logic:
   - Includes sold assets       → prices kept current for monitoring even after position close
 """
 import logging
+import os
 import re
+import threading
+import time as _time
 from datetime import date, timedelta
 from typing import Optional
 
 import duckdb
 import yfinance as yf
 
+# mstarpy registers a SIGTERM handler at import time via signal.signal(), which only
+# works in the main thread. Import it here (module level = main thread at startup) so
+# that subsequent imports in FastAPI worker threads just get the cached module object.
+# Also force Chrome into headless mode via the env var mstarpy reads in browser_options().
+os.environ["SELENIUM_CHROME_FLAGS"] = "--no-sandbox --disable-dev-shm-usage --disable-gpu"
+try:
+    import mstarpy as _mstarpy_preload  # noqa: F401
+except Exception:
+    pass
+
 logger = logging.getLogger(__name__)
 
 _refreshing: bool = False
 _BACKFILL_FLOOR_DATE = date(2025, 1, 1)   # floor when no prior-year transaction exists
+
+# ---------------------------------------------------------------------------
+# Shared mstarpy session cache
+# One Chrome login covers all funds in a refresh cycle — avoids rate-limiting.
+# ---------------------------------------------------------------------------
+_mstar_session = None
+_mstar_session_lock = threading.Lock()
+
+
+def _get_mstar_session():
+    global _mstar_session
+    with _mstar_session_lock:
+        if _mstar_session is None:
+            from mstarpy.search import MorningstarSession
+            logger.info("Opening mstarpy session (headless Chrome)...")
+            _mstar_session = MorningstarSession()
+            logger.info("mstarpy session ready")
+        return _mstar_session
+
+
+def _invalidate_mstar_session():
+    global _mstar_session
+    with _mstar_session_lock:
+        _mstar_session = None
 
 
 def is_refreshing() -> bool:
@@ -208,14 +245,20 @@ def _get_fetch_range(conn: duckdb.DuckDBPyConnection, asset_id: int) -> tuple[da
         oldest_tx = tx_row[0] if isinstance(tx_row[0], date) else tx_row[0].date()
         desired_start = oldest_tx - timedelta(days=365)
 
-    # Check existing price coverage
-    row = conn.execute(
-        "SELECT MAX(date), MIN(date) FROM prices WHERE asset_id = ?", [asset_id]
+    # Check existing price coverage.
+    # Two separate ORDER BY queries avoid a DuckDB InternalException that
+    # fires when MIN/MAX aggregates run against a composite-PK index on an
+    # empty (or freshly-emptied-and-restored) table (duckdb/duckdb#20246).
+    last_row = conn.execute(
+        "SELECT date FROM prices WHERE asset_id = ? ORDER BY date DESC LIMIT 1", [asset_id]
+    ).fetchone()
+    first_row = conn.execute(
+        "SELECT date FROM prices WHERE asset_id = ? ORDER BY date ASC LIMIT 1", [asset_id]
     ).fetchone()
 
-    if row and row[0]:
-        last_price = row[0] if isinstance(row[0], date) else row[0].date()
-        first_price = row[1] if isinstance(row[1], date) else row[1].date()
+    if last_row:
+        last_price = last_row[0] if isinstance(last_row[0], date) else last_row[0].date()
+        first_price = first_row[0] if isinstance(first_row[0], date) else first_row[0].date()
 
         # If existing prices don't reach back to desired_start, do a full re-fetch
         # (yfinance upserts are idempotent so re-downloading existing rows is harmless)
@@ -366,31 +409,50 @@ def _try_investpy(
 def _try_mstarpy(
     conn, asset_id, ticker, isin: Optional[str], currency, start: date, end: date
 ) -> int:
-    try:
-        import mstarpy
-        # Prefer ISIN for Morningstar lookup — avoids ambiguity on name matches
-        search_term = isin or ticker
-        fund = mstarpy.Fund(term=search_term, country="esp")
-        hist = fund.nav(start_date=start, end_date=end)
-        if not hist:
-            return 0
+    from dateutil.parser import parse as parse_date
+    import mstarpy
 
-        count = 0
-        for entry in hist:
-            price_date = entry.get("date")
-            nav = entry.get("nav")
-            if not price_date or not nav:
-                continue
-            if isinstance(price_date, str):
-                from dateutil.parser import parse
-                price_date = parse(price_date).date()
-            price_eur = _price_to_eur(conn, float(nav), currency, price_date)
-            _upsert_price(conn, asset_id, price_date, float(nav), currency, price_eur)
-            count += 1
-        return count
-    except Exception as e:
-        logger.debug("mstarpy failed for %s (isin=%s): %s", ticker, isin, e)
-        return 0
+    search_term = isin or ticker
+    last_exc: Optional[Exception] = None
+
+    for attempt in range(3):
+        try:
+            session = _get_mstar_session()
+            fund = mstarpy.Funds(term=search_term, pageSize=1, session=session)
+            hist = fund.nav(start_date=start, end_date=end)
+            if not hist:
+                return 0
+
+            count = 0
+            for entry in hist:
+                price_date = entry.get("date")
+                nav = entry.get("nav")
+                if not price_date or not nav:
+                    continue
+                if isinstance(price_date, str):
+                    price_date = parse_date(price_date).date()
+                price_eur = _price_to_eur(conn, float(nav), currency, price_date)
+                _upsert_price(conn, asset_id, price_date, float(nav), currency, price_eur)
+                count += 1
+            return count
+
+        except Exception as e:
+            last_exc = e
+            err_str = str(e)
+            if "403" in err_str or "Forbidden" in err_str:
+                # Keep the existing session — recreating it repeatedly just hammers auth
+                # endpoints and makes rate-limiting worse. Back off and retry as-is.
+                wait = 15 * (attempt + 1)
+                logger.warning(
+                    "mstarpy 403 for %s (attempt %d/%d) — backing off %ds",
+                    ticker, attempt + 1, 3, wait,
+                )
+                _time.sleep(wait)
+            else:
+                break
+
+    logger.warning("mstarpy gave up for %s (isin=%s): %s", ticker, isin, last_exc)
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -714,7 +776,8 @@ def _fund_name_from_mstar(isin: str) -> Optional[str]:
     """Try to get a fund's display name from Morningstar via mstarpy."""
     try:
         import mstarpy
-        fund = mstarpy.Fund(term=isin, country="esp")
+        session = _get_mstar_session()
+        fund = mstarpy.Funds(term=isin, pageSize=1, session=session)
         name = getattr(fund, "name", None)
         return name if name and name != isin else None
     except Exception:
