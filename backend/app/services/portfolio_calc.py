@@ -281,7 +281,12 @@ def get_value_at_date(
     """Portfolio market value as of target_date using the last price on or before that date."""
     asset_type_filter = ""
     broker_filter = ""
-    params: list = [target_date, target_date, target_date, target_date]
+    # Param order must match SQL placeholder order:
+    #   1-2: SELECT CASE WHEN t.date <= ?
+    #   3-4: WHERE filters (asset_type?, broker?)  ← injected between SELECT and HAVING dates
+    #   5-6: HAVING CASE WHEN t.date <= ?
+    #   7:   price_asof WHERE date <= ?
+    params: list = [target_date, target_date]
 
     if asset_type:
         asset_type_filter = "AND t.asset_id IN (SELECT id FROM assets WHERE type = ?)"
@@ -290,6 +295,7 @@ def get_value_at_date(
         broker_filter = "AND t.broker = ?"
         params.append(broker)
 
+    params.extend([target_date, target_date])  # HAVING CASE WHEN dates
     params.append(target_date)  # for price_asof WHERE date <= ?
 
     query = f"""
@@ -649,7 +655,7 @@ def get_summary(
                 NULLIF(SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE 0.0 END), 0) AS avg_buy_price_eur
         FROM transactions t
         {asset_join}
-        WHERE 1=1 {broker_filter} {type_filter}
+        WHERE 1=1 {type_filter} {broker_filter}
         GROUP BY t.asset_id
         HAVING SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE -t.shares::DOUBLE END) > 0.000001
     ),
