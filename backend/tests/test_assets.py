@@ -72,13 +72,15 @@ class TestCreateAsset:
         })
         assert r.status_code == 409
 
-    def test_invalid_isin_rejected(self, client):
+    def test_any_isin_format_accepted(self, client):
+        # ISIN validation is intentionally permissive — off-market / manual assets
+        # use custom identifiers that don't follow the strict 12-char ISIN format.
         r = client.post("/api/assets", json={
             "name": "Test", "ticker": "TST", "type": "stock",
             "currency": "EUR", "manual_price": True,
             "isin": "INVALID",
         })
-        assert r.status_code == 422
+        assert r.status_code == 201
 
     def test_valid_isin_accepted(self, client):
         r = client.post("/api/assets", json={
@@ -101,10 +103,11 @@ class TestUpdateAsset:
         r = client.put("/api/assets/9999", json={"name": "Ghost"})
         assert r.status_code == 404
 
-    def test_update_isin_validated(self, client):
+    def test_update_isin_any_format_accepted(self, client):
+        # Same permissive validation as creation — any non-empty string is stored.
         asset = create_asset(client)
         r = client.put(f"/api/assets/{asset['id']}", json={"isin": "TOOSHORT"})
-        assert r.status_code == 422
+        assert r.status_code == 200
 
     def test_update_name_with_transactions(self, client):
         """Renaming an asset that has linked transactions must not throw a FK error."""

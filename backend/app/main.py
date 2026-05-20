@@ -8,6 +8,7 @@ from app.config import settings
 from app.database import close_db, init_db
 from app.routers import assets, portfolio, prices, transactions
 from app.routers import import_router
+from app.routers import balance as balance_router
 
 logging.basicConfig(level=settings.log_level)
 
@@ -38,6 +39,7 @@ app.include_router(transactions.router)
 app.include_router(portfolio.router)
 app.include_router(prices.router)
 app.include_router(import_router.router)
+app.include_router(balance_router.router)
 
 
 @app.get("/health")

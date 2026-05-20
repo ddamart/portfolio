@@ -13,9 +13,11 @@ interface Props {
   period: string
   dateFrom: string
   dateTo: string
+  broker?: string
+  assetType?: string
 }
 
-export function PortfolioSummaryCard({ period, dateFrom, dateTo }: Props) {
+export function PortfolioSummaryCard({ period, dateFrom, dateTo, broker, assetType }: Props) {
   const [summary, setSummary] = useState<PortfolioSummary | null>(null)
   const { lastRefreshAt } = useRefresh()
 
@@ -23,8 +25,10 @@ export function PortfolioSummaryCard({ period, dateFrom, dateTo }: Props) {
     const params: Record<string, string> = period === 'custom'
       ? { ...(dateFrom && { date_from: dateFrom }), ...(dateTo && { date_to: dateTo }) }
       : { period }
+    if (broker) params.broker = broker
+    if (assetType) params.asset_type = assetType
     portfolioApi.summary(params).then(setSummary).catch(() => {})
-  }, [period, dateFrom, dateTo, lastRefreshAt])
+  }, [period, dateFrom, dateTo, broker, assetType, lastRefreshAt])
 
   if (!summary) {
     return (

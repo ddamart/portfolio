@@ -118,7 +118,9 @@ def refresh_all_prices(conn: duckdb.DuckDBPyConnection) -> int:
         fund_ranges = {id_: _get_fetch_range(conn, id_) for id_, _, _, _ in fund_assets}
 
         # Fetch FX rates covering the full backfill window first
-        currencies = (set(c for _, _, c in yf_assets) | set(c for _, _, c, _ in fund_assets)) - {"EUR"}
+        # GBX (pence) uses the GBP FX rate — map it so we don't request EURGBX=X
+        raw_ccys = (set(c for _, _, c in yf_assets) | set(c for _, _, c, _ in fund_assets)) - {"EUR"}
+        currencies = {("GBP" if c == "GBX" else c) for c in raw_ccys}
         if currencies:
             all_starts = [s for s, _ in list(yf_ranges.values()) + list(fund_ranges.values())]
             fx_start = min(all_starts) if all_starts else date.today() - timedelta(days=_REFRESH_DAYS)
@@ -155,7 +157,9 @@ def refresh_single_asset(conn: duckdb.DuckDBPyConnection, asset_id: int) -> int:
 
     start, end = _get_fetch_range(conn, id_)
 
-    currencies = {currency} - {"EUR"}
+    # GBX (pence) uses the GBP FX rate
+    fx_ccy = "GBP" if currency == "GBX" else currency
+    currencies = {fx_ccy} - {"EUR"}
     if currencies:
         _fetch_fx_rates(conn, list(currencies), start)
 
@@ -181,7 +185,7 @@ def fetch_asset_metadata(ticker: str) -> dict:
             )
         return {
             "name": name,
-            "currency": (info.get("currency") or "EUR").upper(),
+            "currency": _normalize_currency(info.get("currency") or "EUR"),
             "image_url": _resolve_logo(info),
         }
     except Exception as e:
@@ -406,19 +410,81 @@ def _try_investpy(
         return 0
 
 
+def _mstar_resolve_secid(session, isin: str) -> Optional[str]:
+    """
+    Use Morningstar's SecuritySearch API to resolve an ISIN to its exact performance ID.
+    Returns the 'pi' (performance ID) field, e.g. '0P0001EIDF', or None on failure.
+
+    Morningstar's fuzzy search (used internally by mstarpy.Funds) often returns a wrong
+    share class when multiple classes share a fund name. The SecuritySearch endpoint does
+    exact ISIN lookup and returns the correct performance ID.
+    """
+    try:
+        import json
+        r = session.get(
+            "https://www.morningstar.es/es/funds/SecuritySearch.ashx",
+            params={"q": isin, "limit": 5, "lang": "es-ES"},
+            timeout=10,
+            headers={"Accept": "application/json, text/javascript, */*"},
+        )
+        if not r.ok or not r.text:
+            return None
+        # Response is a pipe-separated row: "Name|{json}|TYPE|..."
+        for line in r.text.splitlines():
+            parts = line.split("|")
+            if len(parts) < 2:
+                continue
+            try:
+                data = json.loads(parts[1])
+                pi = data.get("pi")
+                if pi:
+                    return pi
+            except (json.JSONDecodeError, IndexError):
+                continue
+        return None
+    except Exception as e:
+        logger.debug("_mstar_resolve_secid failed for %s: %s", isin, e)
+        return None
+
+
 def _try_mstarpy(
     conn, asset_id, ticker, isin: Optional[str], currency, start: date, end: date
 ) -> int:
     from dateutil.parser import parse as parse_date
     import mstarpy
 
-    search_term = isin or ticker
     last_exc: Optional[Exception] = None
 
     for attempt in range(3):
         try:
             session = _get_mstar_session()
+
+            # Resolve the exact Morningstar performance ID via SecuritySearch before
+            # calling mstarpy.Funds — the fuzzy search often returns a wrong share class
+            # when multiple classes share the same fund name (e.g. USD vs SEK class).
+            search_term = isin or ticker
+            if isin:
+                resolved = _mstar_resolve_secid(session, isin)
+                if resolved:
+                    logger.debug("mstarpy: resolved %s → secId %s", isin, resolved)
+                    search_term = resolved
+
             fund = mstarpy.Funds(term=search_term, pageSize=1, session=session)
+
+            # Sanity-check: the found fund's ISIN must match what we asked for
+            if isin:
+                try:
+                    meta = fund.metaData()
+                    found_isin = meta.get("isin")
+                    if found_isin and found_isin != isin:
+                        logger.warning(
+                            "mstarpy ISIN mismatch for %s: searched %s, got %s — skipping",
+                            ticker, isin, found_isin,
+                        )
+                        return 0
+                except Exception:
+                    pass
+
             hist = fund.nav(start_date=start, end_date=end)
             if not hist:
                 return 0
@@ -527,21 +593,40 @@ def fetch_fx_rate_on_demand(conn: duckdb.DuckDBPyConnection, currency: str, on_d
     Fetches from 7 days before on_date to today so the result is stored for future use.
     Returns the rate or None if yfinance has no data.
     """
+    # GBX (pence) shares the GBP FX rate
+    ccy = currency.upper()
+    fx_ccy = "GBP" if ccy == "GBX" else ccy
     start = on_date - timedelta(days=7)
-    _fetch_fx_rates(conn, [currency.upper()], start)
+    _fetch_fx_rates(conn, [fx_ccy], start)
     row = conn.execute(
         "SELECT rate FROM fx_rates WHERE from_ccy = ? AND to_ccy = 'EUR' AND date <= ? ORDER BY date DESC LIMIT 1",
-        [currency.upper(), on_date],
+        [fx_ccy, on_date],
     ).fetchone()
-    return float(row[0]) if row else None
+    if row is None:
+        return None
+    rate = float(row[0])
+    return rate / 100 if ccy == "GBX" else rate
+
+
+def _normalize_currency(raw: str) -> str:
+    """Map yfinance currency strings to canonical codes stored in the DB.
+    yfinance returns "GBp" (lowercase p) for London-listed stocks priced in pence."""
+    if raw == "GBp":
+        return "GBX"
+    return raw.upper()
 
 
 def _price_to_eur(conn, price: float, currency: str, on_date: date) -> float:
-    if currency.upper() == "EUR":
+    ccy = currency.upper()
+    if ccy == "EUR":
         return price
+    # GBX = pence sterling = 1/100 GBP
+    if ccy == "GBX":
+        price = price / 100
+        ccy = "GBP"
     row = conn.execute(
         "SELECT rate FROM fx_rates WHERE from_ccy = ? AND to_ccy = 'EUR' AND date <= ? ORDER BY date DESC LIMIT 1",
-        [currency.upper(), on_date],
+        [ccy, on_date],
     ).fetchone()
     return price * float(row[0]) if row else price
 
@@ -696,7 +781,7 @@ def _yf_full_meta(ticker: str) -> dict:
     try:
         info = yf.Ticker(ticker).info
         name = info.get("longName") or info.get("shortName") or ticker
-        currency = (info.get("currency") or "EUR").upper()
+        currency = _normalize_currency(info.get("currency") or "EUR")
         image_url = _resolve_logo(info)
         qt = info.get("quoteType", "").upper()
         if qt == "ETF":

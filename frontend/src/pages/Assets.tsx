@@ -4,18 +4,19 @@ import type { Asset, AssetLookup, Market } from '../api/client'
 import { assetsApi, pricesApi } from '../api/client'
 import { AssetDetailDrawer } from '../components/AssetDetailDrawer'
 import { AssetLogo } from '../components/AssetLogo'
+import { BalanceDrawer } from '../components/BalanceDrawer'
 import { ManualPriceModal } from '../components/ManualPriceModal'
 
 const MARKET_CURRENCY: Record<string, string> = {
   XETR: 'EUR', XAMS: 'EUR', XMAD: 'EUR', CNMV: 'EUR',
-  XLON: 'GBP', XNYS: 'USD', XNAS: 'USD', XSTO: 'SEK',
+  XLON: 'GBX', XNYS: 'USD', XNAS: 'USD', XSTO: 'SEK',
 }
 
 interface CreateDraft {
   ticker: string
   isin: string
   name: string
-  type: 'stock' | 'etf' | 'fund'
+  type: 'stock' | 'etf' | 'fund' | 'balance'
   market_id: number | null
   currency: string
   manual_price: boolean
@@ -77,18 +78,23 @@ function CreateAssetModal({
         name:         draft.name || draft.ticker,
         ticker:       draft.ticker.trim().toUpperCase(),
         type:         draft.type,
-        currency:     draft.currency,
-        market_id:    draft.market_id,
+        currency:     draft.type === 'balance' ? 'EUR' : draft.currency,
+        market_id:    draft.type === 'balance' ? null : draft.market_id,
         image_url:    draft.image_url.trim() || null,
-        manual_price: draft.manual_price,
+        manual_price: draft.type === 'balance' ? true : draft.manual_price,
         isin:         draft.isin.trim().toUpperCase() || null,
       })
       toast.success(`Activo "${draft.ticker.toUpperCase()}" creado`)
       onSaved()
       onClose()
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      toast.error(msg || 'Error al crear el activo')
+      const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
+      const msg = typeof detail === 'string'
+        ? detail
+        : Array.isArray(detail)
+          ? detail.map((e: { msg?: string }) => e.msg).filter(Boolean).join('; ')
+          : 'Error al crear el activo'
+      toast.error(msg)
     } finally {
       setSaving(false)
     }
@@ -154,33 +160,50 @@ function CreateAssetModal({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className={labelCls}>Tipo</label>
-              <select value={draft.type} onChange={e => setDraft(d => ({ ...d, type: e.target.value as CreateDraft['type'] }))}
-                className={inputCls}>
+              <select
+                value={draft.type}
+                onChange={e => {
+                  const t = e.target.value as CreateDraft['type']
+                  setDraft(d => ({ ...d, type: t, manual_price: t === 'balance' ? true : d.manual_price }))
+                }}
+                className={inputCls}
+              >
                 <option value="stock">Acción</option>
                 <option value="etf">ETF</option>
                 <option value="fund">Fondo</option>
+                <option value="balance">Cartera / Cuenta</option>
               </select>
             </div>
+            {draft.type !== 'balance' && (
+              <div>
+                <label className={labelCls}>Divisa</label>
+                <input value={draft.currency} onChange={e => setDraft(d => ({ ...d, currency: e.target.value.toUpperCase() }))}
+                  className={`${inputCls} font-mono`} maxLength={3} placeholder="EUR" />
+              </div>
+            )}
+          </div>
+          {draft.type !== 'balance' && (
             <div>
-              <label className={labelCls}>Divisa</label>
-              <input value={draft.currency} onChange={e => setDraft(d => ({ ...d, currency: e.target.value.toUpperCase() }))}
-                className={`${inputCls} font-mono`} maxLength={3} placeholder="EUR" />
+              <label className={labelCls}>Mercado</label>
+              <select value={draft.market_id ?? ''} onChange={e => handleMarketChange(e.target.value ? Number(e.target.value) : null)}
+                className={inputCls}>
+                <option value="">Sin asignar</option>
+                {markets.map(m => <option key={m.id} value={m.id}>{m.name} ({m.country})</option>)}
+              </select>
             </div>
-          </div>
-          <div>
-            <label className={labelCls}>Mercado</label>
-            <select value={draft.market_id ?? ''} onChange={e => handleMarketChange(e.target.value ? Number(e.target.value) : null)}
-              className={inputCls}>
-              <option value="">Sin asignar</option>
-              {markets.map(m => <option key={m.id} value={m.id}>{m.name} ({m.country})</option>)}
-            </select>
-          </div>
-          <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 cursor-pointer pt-1">
-            <input type="checkbox" checked={draft.manual_price}
-              onChange={e => setDraft(d => ({ ...d, manual_price: e.target.checked }))}
-              className="rounded" />
-            Precio manual (desactiva fetch automático)
-          </label>
+          )}
+          {draft.type === 'balance' ? (
+            <p className="text-xs text-gray-400 dark:text-gray-500 pt-1">
+              Las carteras/cuentas se valoran mediante aportaciones y snapshots manuales, sin cotización de mercado.
+            </p>
+          ) : (
+            <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 cursor-pointer pt-1">
+              <input type="checkbox" checked={draft.manual_price}
+                onChange={e => setDraft(d => ({ ...d, manual_price: e.target.checked }))}
+                className="rounded" />
+              Precio manual (desactiva fetch automático)
+            </label>
+          )}
         </div>
 
         <div className="flex gap-3 px-5 py-4 border-t border-gray-200 dark:border-gray-700">
@@ -258,8 +281,9 @@ function EditModal({
       onSaved()
       onClose()
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      toast.error(msg || 'Error al guardar')
+      const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
+      const msg = typeof detail === 'string' ? detail : Array.isArray(detail) ? detail.map((e: { msg?: string }) => e.msg).filter(Boolean).join('; ') : 'Error al guardar'
+      toast.error(msg)
     } finally {
       setSaving(false)
     }
@@ -381,8 +405,9 @@ export function AssetsPage() {
       toast.success(`"${asset.ticker}" eliminado`)
       load()
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      toast.error(msg || 'Error al eliminar')
+      const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
+      const msg = typeof detail === 'string' ? detail : Array.isArray(detail) ? detail.map((e: { msg?: string }) => e.msg).filter(Boolean).join('; ') : 'Error al eliminar'
+      toast.error(msg)
     }
   }
 
@@ -574,10 +599,9 @@ export function AssetsPage() {
       )}
 
       {detailAsset && (
-        <AssetDetailDrawer
-          asset={detailAsset}
-          onClose={() => setDetailAsset(null)}
-        />
+        detailAsset.type === 'balance'
+          ? <BalanceDrawer asset={detailAsset} onClose={() => setDetailAsset(null)} />
+          : <AssetDetailDrawer asset={detailAsset} onClose={() => setDetailAsset(null)} />
       )}
     </div>
   )

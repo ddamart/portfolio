@@ -122,7 +122,7 @@ def _apply_schema(conn: duckdb.DuckDBPyConnection) -> None:
             id           INTEGER PRIMARY KEY,
             name         VARCHAR NOT NULL,
             ticker       VARCHAR NOT NULL UNIQUE,
-            type         VARCHAR NOT NULL CHECK (type IN ('etf', 'stock', 'fund')),
+            type         VARCHAR NOT NULL CHECK (type IN ('etf', 'stock', 'fund', 'balance')),
             currency     VARCHAR NOT NULL DEFAULT 'EUR',
             market_id    INTEGER REFERENCES markets(id),
             image_url    VARCHAR,
@@ -139,6 +139,22 @@ def _apply_schema(conn: duckdb.DuckDBPyConnection) -> None:
     """).fetchone()[0]
     if not has_isin:
         conn.execute("ALTER TABLE assets ADD COLUMN isin VARCHAR")
+
+    # Migration: add 'balance' to allowed asset types
+    # Retype the column to drop the old inline CHECK, then add the expanded one
+    has_balance_type = conn.execute("""
+        SELECT COUNT(*) FROM duckdb_constraints()
+        WHERE table_name = 'assets' AND constraint_type = 'CHECK' AND constraint_text ILIKE '%balance%'
+    """).fetchone()[0]
+    if not has_balance_type:
+        try:
+            conn.execute("ALTER TABLE assets ALTER COLUMN type TYPE VARCHAR")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE assets ADD CHECK (type IN ('etf', 'stock', 'fund', 'balance'))")
+        except Exception:
+            pass
 
     conn.execute("""
         CREATE SEQUENCE IF NOT EXISTS assets_id_seq START 1
@@ -196,6 +212,22 @@ def _apply_schema(conn: duckdb.DuckDBPyConnection) -> None:
             to_ccy    VARCHAR(3) NOT NULL,
             rate      DECIMAL(18,8) NOT NULL,
             PRIMARY KEY (date, from_ccy, to_ccy)
+        )
+    """)
+
+    conn.execute("""
+        CREATE SEQUENCE IF NOT EXISTS balance_entries_id_seq START 1
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS balance_entries (
+            id         INTEGER PRIMARY KEY,
+            asset_id   INTEGER NOT NULL REFERENCES assets(id),
+            date       DATE NOT NULL,
+            type       VARCHAR NOT NULL CHECK (type IN ('deposit', 'withdrawal', 'snapshot')),
+            amount_eur DECIMAL(18,2) NOT NULL,
+            notes      VARCHAR,
+            created_at TIMESTAMP DEFAULT current_timestamp
         )
     """)
 

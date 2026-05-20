@@ -219,6 +219,23 @@ export interface ParsedTransaction {
   commission_eur: number | null
 }
 
+export interface BalanceEntry {
+  id: number
+  asset_id: number
+  date: string
+  type: 'deposit' | 'withdrawal' | 'snapshot'
+  amount_eur: number
+  notes: string | null
+  created_at: string
+}
+
+export const balanceApi = {
+  list: (assetId: number) => api.get<BalanceEntry[]>(`/balance/${assetId}`).then(r => r.data),
+  create: (assetId: number, body: { date: string; type: string; amount_eur: number; notes?: string }) =>
+    api.post<BalanceEntry>(`/balance/${assetId}`, body).then(r => r.data),
+  delete: (entryId: number) => api.delete(`/balance/entries/${entryId}`),
+}
+
 export const importApi = {
   parse: (raw_text: string, broker_hint?: string) =>
     api.post<{ transactions: ParsedTransaction[] }>('/import/parse', { raw_text, broker_hint }).then(r => r.data),

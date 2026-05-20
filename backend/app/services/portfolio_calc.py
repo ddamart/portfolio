@@ -168,22 +168,142 @@ def get_holdings(
         )
         result = [h.model_copy(update=period_data.get(h.asset_id, {})) for h in result]
 
+    # Append balance-type asset rows (unless a non-balance asset_type filter is active)
+    if asset_type is None or asset_type == "balance":
+        balance_rows = _get_balance_holdings(conn, latest_date, broker=broker)
+        if balance_rows:
+            # Compute total value including balance assets for allocation_pct
+            tx_total = sum((h.value_eur or 0.0) for h in result)
+            bal_total = sum((h.balance_value_eur or 0.0) for h in balance_rows)
+            grand_total = tx_total + bal_total
+            if grand_total > 0:
+                # Re-compute allocation for tx-based holdings
+                result = [
+                    h.model_copy(update={"allocation_pct": ((h.value_eur or 0.0) / grand_total * 100)})
+                    for h in result
+                ]
+                # Set allocation for balance rows
+                balance_rows = [
+                    h.model_copy(update={"allocation_pct": ((h.balance_value_eur or 0.0) / grand_total * 100)})
+                    for h in balance_rows
+                ]
+            result = result + balance_rows
+
     return result
 
 
-def get_value_at_date(conn: duckdb.DuckDBPyConnection, target_date: date) -> float:
+def _get_balance_holdings(
+    conn: duckdb.DuckDBPyConnection,
+    latest_date: date,
+    broker: Optional[str] = None,
+) -> list[HoldingRow]:
+    """Return HoldingRow entries for all balance-type assets."""
+    # broker filter not applicable to balance assets (they have no broker), but we
+    # skip the entire query if a broker filter is set (balance assets have no broker).
+    if broker:
+        return []
+
+    rows = conn.execute("""
+    WITH latest_snap AS (
+        SELECT DISTINCT ON (asset_id) asset_id, amount_eur AS value_eur, date AS snap_date
+        FROM balance_entries
+        WHERE type = 'snapshot' AND date <= ?
+        ORDER BY asset_id, date DESC
+    ),
+    net_contrib AS (
+        SELECT asset_id,
+               SUM(CASE WHEN type='deposit' THEN amount_eur ELSE -amount_eur END) AS contrib_eur
+        FROM balance_entries
+        WHERE type IN ('deposit', 'withdrawal')
+        GROUP BY asset_id
+    )
+    SELECT a.id, a.name, a.ticker, a.currency, a.image_url, a.manual_price,
+           COALESCE(ls.value_eur, 0) AS value_eur,
+           ls.snap_date,
+           COALESCE(nc.contrib_eur, 0) AS contrib_eur
+    FROM assets a
+    LEFT JOIN latest_snap ls ON ls.asset_id = a.id
+    LEFT JOIN net_contrib nc ON nc.asset_id = a.id
+    WHERE a.type = 'balance'
+    """, [latest_date]).fetchall()
+
+    result = []
+    for row in rows:
+        asset_id = int(row[0])
+        name = row[1]
+        ticker = row[2]
+        currency = row[3]
+        image_url = row[4]
+        manual_price = bool(row[5])
+        value_eur = float(row[6]) if row[6] is not None else 0.0
+        snap_date = row[7]
+        contrib_eur = float(row[8]) if row[8] is not None else 0.0
+
+        pnl_eur = value_eur - contrib_eur
+        gain_pct = (pnl_eur / contrib_eur * 100) if contrib_eur > 0 else None
+
+        result.append(
+            HoldingRow(
+                asset_id=asset_id,
+                name=name,
+                ticker=ticker,
+                type="balance",
+                currency=currency,
+                broker=None,
+                image_url=image_url,
+                manual_price=manual_price,
+                total_shares=0.0,
+                avg_buy_price_eur=0.0,
+                avg_buy_price=0.0,
+                current_price=None,
+                current_price_eur=None,
+                value_eur=value_eur,
+                value_ccy=None,
+                pnl_eur=pnl_eur,
+                pnl_ccy=None,
+                gain_pct=gain_pct,
+                daily_change_pct=None,
+                allocation_pct=0.0,  # will be recalculated by caller
+                balance_value_eur=value_eur,
+                balance_contributions_eur=contrib_eur,
+                balance_last_snapshot_date=str(snap_date) if snap_date is not None else None,
+            )
+        )
+    return result
+
+
+def get_value_at_date(
+    conn: duckdb.DuckDBPyConnection,
+    target_date: date,
+    broker: Optional[str] = None,
+    asset_type: Optional[str] = None,
+) -> float:
     """Portfolio market value as of target_date using the last price on or before that date."""
-    row = conn.execute("""
+    asset_type_filter = ""
+    broker_filter = ""
+    params: list = [target_date, target_date, target_date, target_date]
+
+    if asset_type:
+        asset_type_filter = "AND t.asset_id IN (SELECT id FROM assets WHERE type = ?)"
+        params.append(asset_type)
+    if broker:
+        broker_filter = "AND t.broker = ?"
+        params.append(broker)
+
+    params.append(target_date)  # for price_asof WHERE date <= ?
+
+    query = f"""
     WITH holdings_at AS (
         SELECT
-            asset_id,
-            SUM(CASE WHEN type='buy'  AND date <= ? THEN  shares::DOUBLE
-                     WHEN type='sell' AND date <= ? THEN -shares::DOUBLE
+            t.asset_id,
+            SUM(CASE WHEN t.type='buy'  AND t.date <= ? THEN  t.shares::DOUBLE
+                     WHEN t.type='sell' AND t.date <= ? THEN -t.shares::DOUBLE
                      ELSE 0.0 END) AS shares_held
-        FROM transactions
-        GROUP BY asset_id
-        HAVING SUM(CASE WHEN type='buy'  AND date <= ? THEN  shares::DOUBLE
-                        WHEN type='sell' AND date <= ? THEN -shares::DOUBLE
+        FROM transactions t
+        WHERE 1=1 {asset_type_filter} {broker_filter}
+        GROUP BY t.asset_id
+        HAVING SUM(CASE WHEN t.type='buy'  AND t.date <= ? THEN  t.shares::DOUBLE
+                        WHEN t.type='sell' AND t.date <= ? THEN -t.shares::DOUBLE
                         ELSE 0.0 END) > 0.000001
     ),
     price_asof AS (
@@ -196,14 +316,37 @@ def get_value_at_date(conn: duckdb.DuckDBPyConnection, target_date: date) -> flo
     SELECT COALESCE(SUM(h.shares_held * p.price_eur), 0.0)
     FROM holdings_at h
     JOIN price_asof p ON p.asset_id = h.asset_id
-    """, [target_date, target_date, target_date, target_date, target_date]).fetchone()
-    return float(row[0]) if row and row[0] is not None else 0.0
+    """
+    row = conn.execute(query, params).fetchone()
+    tx_value = float(row[0]) if row and row[0] is not None else 0.0
+
+    # Add balance asset snapshot values (unless filtering by a non-balance asset_type)
+    if asset_type is None or asset_type == "balance":
+        # broker filter skips balance assets (they have no broker)
+        if not broker:
+            bal_row = conn.execute("""
+                SELECT COALESCE(SUM(be.amount_eur), 0)
+                FROM (
+                    SELECT DISTINCT ON (asset_id) asset_id, amount_eur
+                    FROM balance_entries
+                    WHERE type = 'snapshot' AND date <= ?
+                    ORDER BY asset_id, date DESC
+                ) be
+                JOIN assets a ON a.id = be.asset_id
+                WHERE a.type = 'balance'
+            """, [target_date]).fetchone()
+            bal_value = float(bal_row[0]) if bal_row and bal_row[0] is not None else 0.0
+            return tx_value + bal_value
+
+    return tx_value
 
 
 def get_realized_pnl(
     conn: duckdb.DuckDBPyConnection,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
+    broker: Optional[str] = None,
+    asset_type: Optional[str] = None,
 ) -> dict:
     """
     Compute realized P&L using the running Average Cost (AVCO) method.
@@ -218,11 +361,25 @@ def get_realized_pnl(
     - realized_pnl_net_eur / _pct : net of all commissions — buy commissions
       are folded into the AVCO cost basis; sell commissions are deducted on exit.
     """
-    rows = conn.execute("""
-        SELECT asset_id, type, shares, price_eur, commission_eur, date
-        FROM transactions
-        ORDER BY asset_id, date, id
-    """).fetchall()
+    asset_join = ""
+    filters = ""
+    params: list = []
+
+    if asset_type:
+        asset_join = "JOIN assets a ON a.id = t.asset_id"
+        filters += " AND a.type = ?"
+        params.append(asset_type)
+    if broker:
+        filters += " AND t.broker = ?"
+        params.append(broker)
+
+    rows = conn.execute(f"""
+        SELECT t.asset_id, t.type, t.shares, t.price_eur, t.commission_eur, t.date
+        FROM transactions t
+        {asset_join}
+        WHERE 1=1 {filters}
+        ORDER BY t.asset_id, t.date, t.id
+    """, params).fetchall()
 
     avg_costs: dict[int, float] = {}      # AVCO price-only
     avg_costs_net: dict[int, float] = {}  # AVCO including buy commissions
@@ -397,6 +554,8 @@ def get_modified_dietz(
     date_from: date,
     date_to: date,
     current_value: float,
+    broker: Optional[str] = None,
+    asset_type: Optional[str] = None,
 ) -> dict:
     """
     Modified Dietz performance measurement for [date_from, date_to].
@@ -414,16 +573,25 @@ def get_modified_dietz(
     R% = (V_fin − V_ini − ΣCF) / (V_ini + Σ(CF_i × W_i))
     Gain€ = V_fin − V_ini − ΣCF  (pure market contribution, net of capital movements)
     """
-    V_ini = get_value_at_date(conn, date_from)
+    V_ini = get_value_at_date(conn, date_from, broker=broker, asset_type=asset_type)
     V_fin = current_value
     D = max((date_to - date_from).days, 1)  # avoid /0 on same-day periods
 
-    rows = conn.execute("""
+    cf_filters = ""
+    cf_params: list = [date_from, date_to]
+    if asset_type:
+        cf_filters += " AND asset_id IN (SELECT id FROM assets WHERE type = ?)"
+        cf_params.append(asset_type)
+    if broker:
+        cf_filters += " AND broker = ?"
+        cf_params.append(broker)
+
+    rows = conn.execute(f"""
         SELECT type, shares::DOUBLE, price_eur::DOUBLE, commission_eur::DOUBLE, date
         FROM transactions
-        WHERE date > ? AND date <= ?
+        WHERE date > ? AND date <= ? {cf_filters}
         ORDER BY date
-    """, [date_from, date_to]).fetchall()
+    """, cf_params).fetchall()
 
     cf_total = 0.0
     weighted_cf = 0.0
@@ -455,17 +623,35 @@ def get_summary(
     period: Optional[str] = None,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
+    broker: Optional[str] = None,
+    asset_type: Optional[str] = None,
 ) -> PortfolioSummary:
-    row = conn.execute("""
+    # Build SQL filter fragments (same pattern as get_holdings)
+    asset_join = ""
+    broker_filter = ""
+    type_filter = ""
+    summary_params: list = []
+
+    if asset_type:
+        asset_join = "JOIN assets a ON a.id = t.asset_id"
+        type_filter = "AND a.type = ?"
+        summary_params.append(asset_type)
+    if broker:
+        broker_filter = "AND t.broker = ?"
+        summary_params.append(broker)
+
+    row = conn.execute(f"""
     WITH holdings AS (
         SELECT
-            asset_id,
-            SUM(CASE WHEN type='buy' THEN shares::DOUBLE ELSE -shares::DOUBLE END) AS total_shares,
-            SUM(CASE WHEN type='buy' THEN shares::DOUBLE * price_eur::DOUBLE ELSE 0.0 END) /
-                NULLIF(SUM(CASE WHEN type='buy' THEN shares::DOUBLE ELSE 0.0 END), 0) AS avg_buy_price_eur
-        FROM transactions
-        GROUP BY asset_id
-        HAVING SUM(CASE WHEN type='buy' THEN shares::DOUBLE ELSE -shares::DOUBLE END) > 0.000001
+            t.asset_id,
+            SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE -t.shares::DOUBLE END) AS total_shares,
+            SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE * t.price_eur::DOUBLE ELSE 0.0 END) /
+                NULLIF(SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE 0.0 END), 0) AS avg_buy_price_eur
+        FROM transactions t
+        {asset_join}
+        WHERE 1=1 {broker_filter} {type_filter}
+        GROUP BY t.asset_id
+        HAVING SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE -t.shares::DOUBLE END) > 0.000001
     ),
     latest_prices AS (
         SELECT DISTINCT ON (asset_id) asset_id, price_eur::DOUBLE AS price_eur, date
@@ -485,7 +671,7 @@ def get_summary(
         COALESCE(SUM(value_eur - invested_eur), 0) AS total_pnl_eur,
         MAX(date)                                AS last_updated
     FROM joined
-    """).fetchone()
+    """, summary_params).fetchone()
 
     # Resolve period mode and date range
     if period == "all":
@@ -501,12 +687,40 @@ def get_summary(
 
     # Realized P&L: period-filtered when period mode is active
     if is_period and date_from:
-        realized = get_realized_pnl(conn, date_from=date_from, date_to=date_to)
+        realized = get_realized_pnl(conn, date_from=date_from, date_to=date_to, broker=broker, asset_type=asset_type)
     else:
-        realized = get_realized_pnl(conn)
+        realized = get_realized_pnl(conn, broker=broker, asset_type=asset_type)
+
+    # Fetch balance asset totals (value via get_value_at_date, contributions via SQL)
+    balance_value = 0.0
+    balance_contrib = 0.0
+    if (asset_type is None or asset_type == "balance") and not broker:
+        today = date.today()
+        balance_value = 0.0
+        # latest snapshot sum for balance assets
+        bv_row = conn.execute("""
+            SELECT COALESCE(SUM(be.amount_eur), 0)
+            FROM (
+                SELECT DISTINCT ON (asset_id) asset_id, amount_eur
+                FROM balance_entries
+                WHERE type = 'snapshot' AND date <= ?
+                ORDER BY asset_id, date DESC
+            ) be
+            JOIN assets a ON a.id = be.asset_id
+            WHERE a.type = 'balance'
+        """, [today]).fetchone()
+        balance_value = float(bv_row[0]) if bv_row and bv_row[0] is not None else 0.0
+
+        bc_row = conn.execute("""
+            SELECT COALESCE(SUM(CASE WHEN be.type='deposit' THEN be.amount_eur ELSE -be.amount_eur END), 0)
+            FROM balance_entries be
+            JOIN assets a ON a.id = be.asset_id
+            WHERE a.type = 'balance' AND be.type IN ('deposit', 'withdrawal')
+        """).fetchone()
+        balance_contrib = float(bc_row[0]) if bc_row and bc_row[0] is not None else 0.0
 
     # fetchone() returns None if the inner query has zero rows (no prices loaded yet)
-    if row is None or row[0] is None:
+    if (row is None or row[0] is None) and balance_value == 0.0:
         return PortfolioSummary(
             total_value_eur=0.0,
             total_invested_eur=0.0,
@@ -516,9 +730,11 @@ def get_summary(
             **realized,
         )
 
-    total_value = float(row[0])
-    total_invested = float(row[1])
-    pnl = float(row[2])
+    tx_value = float(row[0]) if row and row[0] is not None else 0.0
+    tx_invested = float(row[1]) if row and row[1] is not None else 0.0
+    total_value = tx_value + balance_value
+    total_invested = tx_invested + balance_contrib
+    pnl = total_value - total_invested
     pnl_pct = (pnl / total_invested * 100) if total_invested > 0 else 0.0
 
     # Period return using Modified Dietz (accounts for capital injections/withdrawals)
@@ -530,20 +746,22 @@ def get_summary(
         # When the period ends in the past, V_fin must be the historical value at
         # date_to, not today's portfolio value (which inflates the return figure).
         if effective_date_to < date.today():
-            v_fin = get_value_at_date(conn, effective_date_to)
+            v_fin = get_value_at_date(conn, effective_date_to, broker=broker, asset_type=asset_type)
         else:
             v_fin = total_value
-        md = get_modified_dietz(conn, date_from, effective_date_to, v_fin)
+        md = get_modified_dietz(conn, date_from, effective_date_to, v_fin, broker=broker, asset_type=asset_type)
         period_start_value = md["period_start_value_eur"]
         period_return_eur = md["period_return_eur"]
         period_return_pct = md["period_return_pct"]
+
+    last_updated = row[3] if row is not None else None
 
     return PortfolioSummary(
         total_value_eur=total_value,
         total_invested_eur=total_invested,
         total_pnl_eur=pnl,
         total_pnl_pct=pnl_pct,
-        last_updated=row[3],
+        last_updated=last_updated,
         period_start_value_eur=period_start_value,
         period_return_eur=period_return_eur,
         period_return_pct=period_return_pct,
@@ -551,7 +769,11 @@ def get_summary(
     )
 
 
-def _build_invested_step_series(conn: duckdb.DuckDBPyConnection) -> tuple[list[date], list[float]]:
+def _build_invested_step_series(
+    conn: duckdb.DuckDBPyConnection,
+    broker: Optional[str] = None,
+    asset_type: Optional[str] = None,
+) -> tuple[list[date], list[float]]:
     """
     Return (dates, values) sorted ascending where each value is the remaining
     cost basis AFTER all transactions on that date, using the running AVCO method.
@@ -559,11 +781,25 @@ def _build_invested_step_series(conn: duckdb.DuckDBPyConnection) -> tuple[list[d
     "Invested" = cost of shares still held = total_buy_cost − (sold_shares × avg_cost_at_sell).
     This is consistent with get_realized_pnl and can never go negative.
     """
-    rows = conn.execute("""
-        SELECT asset_id, type, shares, price_eur, date
-        FROM transactions
-        ORDER BY date, id
-    """).fetchall()
+    asset_join = ""
+    filters = ""
+    params: list = []
+
+    if asset_type:
+        asset_join = "JOIN assets a ON a.id = t.asset_id"
+        filters += " AND a.type = ?"
+        params.append(asset_type)
+    if broker:
+        filters += " AND t.broker = ?"
+        params.append(broker)
+
+    rows = conn.execute(f"""
+        SELECT t.asset_id, t.type, t.shares, t.price_eur, t.date
+        FROM transactions t
+        {asset_join}
+        WHERE 1=1 {filters}
+        ORDER BY t.date, t.id
+    """, params).fetchall()
 
     def _to_date(v) -> date:
         return v if isinstance(v, date) else v.date()
@@ -602,6 +838,8 @@ def get_chart_data(
     period: Optional[str] = "ytd",
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
+    broker: Optional[str] = None,
+    asset_type: Optional[str] = None,
 ) -> list[ChartPoint]:
     if period and not date_from:
         date_from, date_to = _period_to_date_range(period)
@@ -614,6 +852,31 @@ def get_chart_data(
     if date_to:
         date_filter += " AND date <= ?"
         params.append(date_to)
+
+    # Build broker/asset_type filter fragments (same pattern as get_holdings)
+    asset_join = ""
+    broker_filter = ""
+    type_filter = ""
+    extra_params: list = []
+
+    if asset_type:
+        asset_join = "JOIN assets a ON a.id = t2.asset_id"
+        type_filter = "AND a.type = ?"
+        extra_params.append(asset_type)
+    if broker:
+        broker_filter = "AND t2.broker = ?"
+        extra_params.append(broker)
+
+    # Filters for the outer transactions join (use t alias)
+    outer_broker_filter = f"AND t.broker = ?" if broker else ""
+    outer_type_filter = f"AND t.asset_id IN (SELECT id FROM assets WHERE type = ?)" if asset_type else ""
+    outer_extra_params: list = []
+    if asset_type:
+        outer_extra_params.append(asset_type)
+    if broker:
+        outer_extra_params.append(broker)
+
+    all_params = params + extra_params + outer_extra_params
 
     query = f"""
     WITH date_spine AS (
@@ -628,8 +891,14 @@ def get_chart_data(
                      WHEN t.type='sell' AND t.date <= d.date THEN -t.shares::DOUBLE
                      ELSE 0.0 END) AS shares_held
         FROM date_spine d
-        CROSS JOIN (SELECT DISTINCT asset_id FROM transactions) assets
-        JOIN transactions t ON t.asset_id = assets.asset_id
+        CROSS JOIN (
+            SELECT DISTINCT t2.asset_id
+            FROM transactions t2
+            {asset_join}
+            WHERE 1=1 {broker_filter} {type_filter}
+        ) asset_ids
+        JOIN transactions t ON t.asset_id = asset_ids.asset_id
+        WHERE 1=1 {outer_broker_filter} {outer_type_filter}
         GROUP BY t.asset_id, d.date
         HAVING SUM(CASE WHEN t.type='buy' AND t.date <= d.date THEN t.shares::DOUBLE
                         WHEN t.type='sell' AND t.date <= d.date THEN -t.shares::DOUBLE
@@ -657,10 +926,10 @@ def get_chart_data(
     ORDER BY price_date
     """
 
-    rows = conn.execute(query, params).fetchall()
+    rows = conn.execute(query, all_params).fetchall()
 
     # Build invested step series (AVCO cost basis) and forward-fill onto chart dates
-    step_dates, step_values = _build_invested_step_series(conn)
+    step_dates, step_values = _build_invested_step_series(conn, broker=broker, asset_type=asset_type)
 
     def _invested_at(chart_date) -> Optional[float]:
         if not step_dates:
@@ -669,7 +938,92 @@ def get_chart_data(
         idx = bisect.bisect_right(step_dates, d) - 1
         return step_values[idx] if idx >= 0 else None
 
-    return [
-        ChartPoint(date=row[0], value_eur=float(row[1]), invested_eur=_invested_at(row[0]))
-        for row in rows
-    ]
+    # Add balance asset values if not filtered to non-balance types (and no broker filter)
+    balance_by_date: dict[date, tuple[float, float]] = {}  # date → (value_eur, net_contrib_eur)
+    if (asset_type is None or asset_type == "balance") and not broker:
+        balance_by_date = _build_balance_chart_series(conn, [row[0] for row in rows])
+
+    chart = []
+    for row in rows:
+        chart_date = row[0]
+        value_eur = float(row[1])
+        invested_eur = _invested_at(chart_date)
+
+        if balance_by_date:
+            bal_value, bal_contrib = balance_by_date.get(chart_date, (0.0, 0.0))
+            value_eur += bal_value
+            if invested_eur is not None:
+                invested_eur = invested_eur + bal_contrib
+            elif bal_contrib > 0:
+                invested_eur = bal_contrib
+
+        chart.append(ChartPoint(date=chart_date, value_eur=value_eur, invested_eur=invested_eur))
+    return chart
+
+
+def _build_balance_chart_series(
+    conn: duckdb.DuckDBPyConnection,
+    chart_dates: list,
+) -> dict:
+    """
+    For each date in chart_dates, compute:
+    - balance_value: latest snapshot amount_eur per balance asset <= date, summed
+    - balance_invested: cumulative net contributions (deposits - withdrawals) up to date
+
+    Returns dict mapping date → (balance_value_eur, balance_net_contrib_eur).
+    """
+    if not chart_dates:
+        return {}
+
+    # Fetch all balance entries sorted ascending
+    all_entries = conn.execute("""
+        SELECT be.asset_id, be.type, be.amount_eur::DOUBLE, be.date
+        FROM balance_entries be
+        JOIN assets a ON a.id = be.asset_id
+        WHERE a.type = 'balance'
+        ORDER BY be.date, be.id
+    """).fetchall()
+
+    if not all_entries:
+        return {}
+
+    def _to_date(v) -> date:
+        return v if isinstance(v, date) else v.date()
+
+    # Separate snapshots and contributions into sorted lists
+    snapshots: dict[int, list] = {}   # asset_id → [(date, amount)]
+    contrib_dates: list = []          # [(date, delta_eur)]
+
+    for asset_id, entry_type, amount_eur, entry_date in all_entries:
+        entry_date = _to_date(entry_date)
+        if entry_type == "snapshot":
+            snapshots.setdefault(asset_id, []).append((entry_date, amount_eur))
+        elif entry_type in ("deposit", "withdrawal"):
+            delta = amount_eur if entry_type == "deposit" else -amount_eur
+            contrib_dates.append((entry_date, delta))
+
+    contrib_dates.sort(key=lambda x: x[0])
+
+    result: dict[date, tuple[float, float]] = {}
+    for chart_date in chart_dates:
+        d = _to_date(chart_date)
+
+        # Sum latest snapshot per asset up to d
+        bal_value = 0.0
+        for asset_id, snaps in snapshots.items():
+            # snaps is sorted ascending by date
+            val = None
+            for snap_date, snap_amount in snaps:
+                if snap_date <= d:
+                    val = snap_amount
+                else:
+                    break
+            if val is not None:
+                bal_value += val
+
+        # Sum all net contributions up to d
+        bal_contrib = sum(delta for cd, delta in contrib_dates if cd <= d)
+
+        result[d] = (bal_value, bal_contrib)
+
+    return result

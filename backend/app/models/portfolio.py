@@ -49,6 +49,10 @@ class HoldingRow(BaseModel):
     period_avg_price_eur: Optional[float] = None    # period_invested_eur / total_shares
     period_gain_eur: Optional[float] = None         # Modified Dietz gain €
     period_gain_pct: Optional[float] = None         # Modified Dietz %
+    # Balance asset fields (only populated when asset type='balance')
+    balance_value_eur: Optional[float] = None
+    balance_contributions_eur: Optional[float] = None
+    balance_last_snapshot_date: Optional[str] = None
 
 
 class ChartPoint(BaseModel):

@@ -14,8 +14,10 @@ def portfolio_summary(
     period: Optional[str] = None,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
+    broker: Optional[str] = None,
+    asset_type: Optional[str] = None,
 ):
-    return get_summary(get_db(), period=period, date_from=date_from, date_to=date_to)
+    return get_summary(get_db(), period=period, date_from=date_from, date_to=date_to, broker=broker, asset_type=asset_type)
 
 
 @router.get("/holdings", response_model=list[HoldingRow])
@@ -34,5 +36,7 @@ def portfolio_chart(
     period: Optional[str] = "ytd",
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
+    broker: Optional[str] = None,
+    asset_type: Optional[str] = None,
 ):
-    return get_chart_data(get_db(), period=period, date_from=date_from, date_to=date_to)
+    return get_chart_data(get_db(), period=period, date_from=date_from, date_to=date_to, broker=broker, asset_type=asset_type)

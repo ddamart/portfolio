@@ -17,7 +17,7 @@ const ASSET_TYPES = [
 ]
 
 const CURRENCIES = [
-  'EUR', 'USD', 'GBP', 'CHF', 'SEK', 'DKK', 'NOK',
+  'EUR', 'USD', 'GBP', 'GBX', 'CHF', 'SEK', 'DKK', 'NOK',
   'JPY', 'CAD', 'AUD', 'HKD', 'SGD', 'MXN', 'BRL', 'PLN',
 ]
 

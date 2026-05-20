@@ -10,6 +10,10 @@ export function formatEur(value: number, decimals = 2): string {
 /** Format a value in any ISO currency. Falls back to "1.234,56 USD" if the code is unknown. */
 export function formatCcy(value: number, currency: string, decimals = 2): string {
   if (currency === 'EUR') return formatEur(value, decimals)
+  // GBX is pence sterling — not an ISO 4217 code, Intl would throw
+  if (currency === 'GBX') {
+    return `${new Intl.NumberFormat('es-ES', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }).format(value)} p`
+  }
   try {
     return new Intl.NumberFormat('es-ES', {
       style: 'currency',
@@ -24,7 +28,7 @@ export function formatCcy(value: number, currency: string, decimals = 2): string
 }
 
 const _CCY_SYMBOL: Record<string, string> = {
-  EUR: '€', USD: '$', GBP: '£', JPY: '¥', CHF: 'Fr.', SEK: 'kr', NOK: 'kr', DKK: 'kr', CAD: 'CA$', AUD: 'A$',
+  EUR: '€', USD: '$', GBP: '£', GBX: 'p', JPY: '¥', CHF: 'Fr.', SEK: 'kr', NOK: 'kr', DKK: 'kr', CAD: 'CA$', AUD: 'A$',
 }
 
 /** Short axis tick: "$170", "€4k", "$1.2M" — no decimals for readability */

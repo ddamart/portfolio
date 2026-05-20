@@ -16,8 +16,9 @@ def _validate_isin(v: Optional[str]) -> Optional[str]:
     if v is None:
         return v
     v = v.upper().strip()
-    if not re.match(r'^[A-Z]{2}[A-Z0-9]{10}$', v):
-        raise ValueError('ISIN must be 12 characters: 2 letters followed by 10 alphanumeric')
+    if not v:
+        return None
+    # Normalize standard ISINs; allow arbitrary strings for off-market / manual assets
     return v
 
 

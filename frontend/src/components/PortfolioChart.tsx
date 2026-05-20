@@ -17,9 +17,11 @@ interface Props {
   dateFrom?: string
   dateTo?: string
   onRangeSelect?: (from: string, to: string) => void
+  broker?: string
+  assetType?: string
 }
 
-export function PortfolioChart({ period, dateFrom, dateTo, onRangeSelect }: Props) {
+export function PortfolioChart({ period, dateFrom, dateTo, onRangeSelect, broker, assetType }: Props) {
   const [data, setData] = useState<ChartPoint[]>([])
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [loading, setLoading] = useState(true)
@@ -37,6 +39,8 @@ export function PortfolioChart({ period, dateFrom, dateTo, onRangeSelect }: Prop
     const params: Record<string, string> = period === 'custom'
       ? { ...(dateFrom && { date_from: dateFrom }), ...(dateTo && { date_to: dateTo }) }
       : { period }
+    if (broker) params.broker = broker
+    if (assetType) params.asset_type = assetType
     Promise.all([
       portfolioApi.chart(params),
       transactionsApi.list({ ...params, sort_by: 'date', sort_dir: 'asc' }),
@@ -44,7 +48,7 @@ export function PortfolioChart({ period, dateFrom, dateTo, onRangeSelect }: Prop
       .then(([chartData, txs]) => { setData(chartData); setTransactions(txs) })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [period, dateFrom, dateTo, lastRefreshAt])
+  }, [period, dateFrom, dateTo, broker, assetType, lastRefreshAt])
 
   const displayData = useMemo(() => {
     return data.map(d => {

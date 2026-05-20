@@ -7,11 +7,12 @@ import {
 } from '@tanstack/react-table'
 import type { SortingState } from '@tanstack/react-table'
 import { useEffect, useMemo, useState } from 'react'
-import type { HoldingRow } from '../api/client'
+import type { Asset, HoldingRow } from '../api/client'
 import { portfolioApi } from '../api/client'
 import { useRefresh } from '../contexts/RefreshContext'
 import { formatEur, formatNumber, formatPct, pnlClass, pnlClassMuted } from '../utils/format'
 import { AssetLogo } from './AssetLogo'
+import { BalanceDrawer } from './BalanceDrawer'
 import { ManualPriceModal } from './ManualPriceModal'
 
 const col = createColumnHelper<HoldingRow>()
@@ -23,13 +24,22 @@ const BROKER_LABEL: Record<string, string> = {
   degiro: 'Degiro',
 }
 
-export function PortfolioTable({ period, dateFrom, dateTo }: { period: string; dateFrom?: string; dateTo?: string }) {
+export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: {
+  period: string
+  dateFrom?: string
+  dateTo?: string
+  broker?: string
+  assetType?: string
+}) {
   const [holdings, setHoldings] = useState<HoldingRow[]>([])
   const [loading, setLoading] = useState(true)
   const [sorting, setSorting] = useState<SortingState>([{ id: 'value_eur', desc: true }])
   const [manualPriceAsset, setManualPriceAsset] = useState<HoldingRow | null>(null)
+  const [balanceDrawerAsset, setBalanceDrawerAsset] = useState<HoldingRow | null>(null)
   const { lastRefreshAt } = useRefresh()
 
+  const regularHoldings = useMemo(() => holdings.filter(h => h.type !== 'balance'), [holdings])
+  const balanceHoldings = useMemo(() => holdings.filter(h => h.type === 'balance'), [holdings])
   const hasPeriod = period !== 'all' && !(period === 'custom' && !dateFrom)
 
   const load = () => {
@@ -37,13 +47,15 @@ export function PortfolioTable({ period, dateFrom, dateTo }: { period: string; d
     const params: Record<string, string> = period === 'custom'
       ? { ...(dateFrom && { date_from: dateFrom }), ...(dateTo && { date_to: dateTo }) }
       : { period }
+    if (broker) params.broker = broker
+    if (assetType) params.asset_type = assetType
     portfolioApi.holdings(params).then(d => {
       setHoldings(d)
       setLoading(false)
     }).catch(() => setLoading(false))
   }
 
-  useEffect(() => { load() }, [period, dateFrom, dateTo, lastRefreshAt])
+  useEffect(() => { load() }, [period, dateFrom, dateTo, broker, assetType, lastRefreshAt])
 
   const columns = useMemo(() => [
     col.accessor('name', {
@@ -252,7 +264,7 @@ export function PortfolioTable({ period, dateFrom, dateTo }: { period: string; d
   ], [hasPeriod])
 
   const table = useReactTable({
-    data: holdings,
+    data: regularHoldings,
     columns,
     state: { sorting },
     onSortingChange: setSorting,
@@ -287,7 +299,7 @@ export function PortfolioTable({ period, dateFrom, dateTo }: { period: string; d
           <tbody>
             {loading ? (
               <tr><td colSpan={columns.length + 1} className="text-center py-12 text-gray-400">Cargando...</td></tr>
-            ) : holdings.length === 0 ? (
+            ) : regularHoldings.length === 0 ? (
               <tr><td colSpan={columns.length + 1} className="text-center py-12 text-gray-400 text-sm">Sin posiciones. Añade una transacción para empezar.</td></tr>
             ) : (
               table.getRowModel().rows.map(row => (
@@ -318,6 +330,66 @@ export function PortfolioTable({ period, dateFrom, dateTo }: { period: string; d
           asset={manualPriceAsset}
           onClose={() => setManualPriceAsset(null)}
           onSaved={load}
+        />
+      )}
+
+      {/* Balance assets section */}
+      {!loading && balanceHoldings.length > 0 && (
+        <div className="border-t border-gray-200 dark:border-gray-700">
+          <div className="px-4 py-2 bg-gray-50 dark:bg-gray-700/30">
+            <span className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Carteras / Cuentas</span>
+          </div>
+          {balanceHoldings.map(h => (
+            <div
+              key={h.asset_id}
+              onClick={() => setBalanceDrawerAsset(h)}
+              className="flex items-center gap-3 px-4 py-3 border-b border-gray-50 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-700/30 cursor-pointer transition-colors"
+            >
+              <AssetLogo asset={{ id: h.asset_id, ticker: h.ticker, name: h.name, image_url: h.image_url, type: h.type } as Asset} className="w-7 h-7 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="font-medium text-gray-900 dark:text-white text-sm">{h.name}</p>
+                <p className="text-xs font-mono text-gray-400">{h.ticker}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-sm font-medium text-gray-900 dark:text-white">
+                  {h.balance_value_eur != null ? formatEur(h.balance_value_eur) : '—'}
+                </p>
+                {h.balance_last_snapshot_date && (
+                  <p className="text-xs text-gray-400">{h.balance_last_snapshot_date}</p>
+                )}
+              </div>
+              <div className="text-right w-28">
+                <p className="text-xs text-gray-400">Aportado</p>
+                <p className="text-sm text-gray-700 dark:text-gray-300">
+                  {h.balance_contributions_eur != null ? formatEur(h.balance_contributions_eur) : '—'}
+                </p>
+              </div>
+              <div className="text-right w-28">
+                {h.pnl_eur != null ? (
+                  <>
+                    <p className={`text-sm font-medium ${pnlClass(h.pnl_eur)}`}>{formatEur(h.pnl_eur)}</p>
+                    {h.gain_pct != null && <p className={`text-xs ${pnlClass(h.gain_pct)}`}>{formatPct(h.gain_pct)}</p>}
+                  </>
+                ) : <p className="text-sm text-gray-400">—</p>}
+              </div>
+              <div className="text-right w-16">
+                <div className="flex items-center gap-1.5 justify-end">
+                  <div className="w-12 bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
+                    <div className="bg-purple-500 h-1.5 rounded-full" style={{ width: `${Math.min(h.allocation_pct, 100)}%` }} />
+                  </div>
+                  <span className="text-xs text-gray-500">{h.allocation_pct.toFixed(1)}%</span>
+                </div>
+              </div>
+              <span className="text-gray-400 text-xs">›</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {balanceDrawerAsset && (
+        <BalanceDrawer
+          asset={{ id: balanceDrawerAsset.asset_id, ticker: balanceDrawerAsset.ticker, name: balanceDrawerAsset.name, image_url: balanceDrawerAsset.image_url, type: 'balance', currency: 'EUR', market_id: null, manual_price: true, isin: null, created_at: '', in_portfolio: true } as Asset}
+          onClose={() => { setBalanceDrawerAsset(null); load() }}
         />
       )}
     </div>

@@ -17,6 +17,7 @@ def _mock_funds_class(name: str, isin: str, nav_data: list):
     instance.name = name
     instance.isin = isin
     instance.nav.return_value = nav_data
+    instance.metaData.return_value = {"isin": isin}
     klass = MagicMock(return_value=instance)
     return klass
 
@@ -37,7 +38,9 @@ class TestTryMstarpy:
         ]
         mock_cls = _mock_funds_class("Amundi S&P 500 Screened INDEX AE Acc", "LU0996179007", nav_payload)
 
-        with patch.dict("sys.modules", {"mstarpy": MagicMock(Funds=mock_cls)}):
+        _no_secid = "app.services.price_fetcher._mstar_resolve_secid"
+        with patch.dict("sys.modules", {"mstarpy": MagicMock(Funds=mock_cls)}), \
+             patch(_no_secid, return_value=None):
             count = _try_mstarpy(
                 conn, asset_id=999, ticker="LU0996179007",
                 isin="LU0996179007", currency="EUR",
@@ -77,7 +80,9 @@ class TestTryMstarpy:
         )
         mock_cls = _mock_funds_class("Amundi IS MSCI World AE-C", "LU0996182563", [])
 
-        with patch.dict("sys.modules", {"mstarpy": MagicMock(Funds=mock_cls)}):
+        _no_secid = "app.services.price_fetcher._mstar_resolve_secid"
+        with patch.dict("sys.modules", {"mstarpy": MagicMock(Funds=mock_cls)}), \
+             patch(_no_secid, return_value=None):
             _try_mstarpy(
                 conn, asset_id=997, ticker="AMIEAEC",
                 isin="LU0996182563", currency="EUR",
