@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Area, CartesianGrid, ComposedChart, ReferenceDot,
+  Area, CartesianGrid, ComposedChart, ReferenceArea, ReferenceDot,
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
 import type { ChartPoint, Transaction } from '../api/client'
@@ -12,13 +12,25 @@ const INVESTED_COLOR = '#3b82f6'
 
 type ViewMode = 'value' | 'pnl' | 'pnl_pct'
 
-export function PortfolioChart({ period, dateFrom, dateTo }: { period: string; dateFrom?: string; dateTo?: string }) {
+interface Props {
+  period: string
+  dateFrom?: string
+  dateTo?: string
+  onRangeSelect?: (from: string, to: string) => void
+}
+
+export function PortfolioChart({ period, dateFrom, dateTo, onRangeSelect }: Props) {
   const [data, setData] = useState<ChartPoint[]>([])
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [loading, setLoading] = useState(true)
   const [showInvested, setShowInvested] = useState(true)
   const [viewMode, setViewMode] = useState<ViewMode>('value')
   const { lastRefreshAt } = useRefresh()
+
+  // Drag-to-select state
+  const [dragStart, setDragStart] = useState<string | null>(null)
+  const [dragEnd, setDragEnd] = useState<string | null>(null)
+  const [isDragging, setIsDragging] = useState(false)
 
   useEffect(() => {
     setLoading(true)
@@ -34,7 +46,6 @@ export function PortfolioChart({ period, dateFrom, dateTo }: { period: string; d
       .finally(() => setLoading(false))
   }, [period, dateFrom, dateTo, lastRefreshAt])
 
-  // Add display_y to each point based on the active view mode
   const displayData = useMemo(() => {
     return data.map(d => {
       if (viewMode === 'value') return { ...d, display_y: d.value_eur }
@@ -94,12 +105,49 @@ export function PortfolioChart({ period, dateFrom, dateTo }: { period: string; d
     { key: 'pnl_pct', label: 'G/P %' },
   ]
 
+  // Drag handlers — only active when onRangeSelect is wired
+  const handleMouseDown = (e: any) => {
+    if (!onRangeSelect || !e?.activeLabel) return
+    setDragStart(e.activeLabel)
+    setDragEnd(e.activeLabel)
+    setIsDragging(true)
+  }
+
+  const handleMouseMove = (e: any) => {
+    if (!isDragging || !e?.activeLabel) return
+    setDragEnd(e.activeLabel)
+  }
+
+  const handleMouseUp = (e: any) => {
+    if (!isDragging || !dragStart) { setIsDragging(false); return }
+    const end = e?.activeLabel ?? dragEnd ?? dragStart
+    const from = dragStart <= end ? dragStart : end
+    const to   = dragStart <= end ? end : dragStart
+    setDragStart(null)
+    setDragEnd(null)
+    setIsDragging(false)
+    if (from !== to) onRangeSelect?.(from, to)
+  }
+
+  const handleMouseLeave = () => {
+    if (isDragging) {
+      setDragStart(null); setDragEnd(null); setIsDragging(false)
+    }
+  }
+
+  const selX1 = dragStart && dragEnd ? (dragStart <= dragEnd ? dragStart : dragEnd) : null
+  const selX2 = dragStart && dragEnd ? (dragStart <= dragEnd ? dragEnd : dragStart) : null
+
   return (
     <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-6">
       <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
-        <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Evolución del Portfolio</h2>
         <div className="flex items-center gap-2">
-          {/* View mode segmented control */}
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Evolución del Portfolio</h2>
+          {onRangeSelect && (
+            <span className="text-xs text-gray-400 dark:text-gray-500">· arrastra para filtrar</span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
           <div className="flex rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden text-xs font-medium">
             {VIEW_MODES.map(({ key, label }) => (
               <button
@@ -116,7 +164,6 @@ export function PortfolioChart({ period, dateFrom, dateTo }: { period: string; d
             ))}
           </div>
 
-          {/* Invertido toggle — only in value mode */}
           {viewMode === 'value' && hasInvested && (
             <button
               onClick={() => setShowInvested(v => !v)}
@@ -144,7 +191,15 @@ export function PortfolioChart({ period, dateFrom, dateTo }: { period: string; d
         </div>
       ) : (
         <ResponsiveContainer width="100%" height={280}>
-          <ComposedChart data={displayData} margin={{ top: 8, right: 4, left: 0, bottom: 0 }}>
+          <ComposedChart
+            data={displayData}
+            margin={{ top: 8, right: 4, left: 0, bottom: 0 }}
+            style={{ cursor: onRangeSelect ? (isDragging ? 'col-resize' : 'crosshair') : 'default' }}
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={handleMouseLeave}
+          >
             <defs>
               <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%" stopColor={valueColor} stopOpacity={0.18} />
@@ -168,59 +223,61 @@ export function PortfolioChart({ period, dateFrom, dateTo }: { period: string; d
               width={52}
             />
 
-            <Tooltip
-              content={({ active, payload, label }) => {
-                if (!active || !payload?.length) return null
-                const events = eventsByDate.get(label as string) ?? []
-                return (
-                  <div style={{
-                    background: '#1f2937', borderRadius: 8,
-                    padding: '10px 14px', fontSize: 13, color: '#f9fafb', minWidth: 190,
-                  }}>
-                    <div className="mb-2 text-gray-400 text-xs">{label as string}</div>
-                    {payload.map(entry => {
-                      const key = entry.dataKey as string
-                      const val = Number(entry.value)
-                      let tooltipLabel = 'Valor'
-                      let formatted = formatEur(val)
-                      if (key === 'display_y') {
-                        if (viewMode === 'pnl') { tooltipLabel = 'Beneficio'; formatted = formatEur(val) }
-                        else if (viewMode === 'pnl_pct') { tooltipLabel = 'Beneficio'; formatted = formatPct(val) }
-                      } else if (key === 'invested_eur') {
-                        tooltipLabel = 'Invertido'
-                      }
-                      return (
-                        <div key={key} className="flex items-center justify-between gap-4 mb-1">
-                          <span className="text-gray-400 text-xs">{tooltipLabel}</span>
-                          <span style={{ color: entry.color as string }} className="font-semibold">
-                            {formatted}
-                          </span>
-                        </div>
-                      )
-                    })}
-                    {events.length > 0 && (
-                      <div className="mt-2 pt-2 border-t border-gray-600 space-y-1.5">
-                        {events.map(tx => (
-                          <div key={tx.id} className="flex items-center gap-2 text-xs">
-                            <span className={`shrink-0 px-1.5 py-0.5 rounded font-bold ${
-                              tx.type === 'buy' ? 'bg-green-900/60 text-green-400' : 'bg-red-900/60 text-red-400'
-                            }`}>
-                              {tx.type === 'buy' ? 'Compra' : 'Venta'}
-                            </span>
-                            <span className="font-mono text-gray-300">{tx.asset_ticker}</span>
-                            <span className="text-gray-400 ml-auto">
-                              {formatNumber(tx.shares, 3)} × {formatEur(tx.price_eur)}
+            {/* Suppress tooltip while dragging to keep the UI clean */}
+            {!isDragging && (
+              <Tooltip
+                content={({ active, payload, label }) => {
+                  if (!active || !payload?.length) return null
+                  const events = eventsByDate.get(label as string) ?? []
+                  return (
+                    <div style={{
+                      background: '#1f2937', borderRadius: 8,
+                      padding: '10px 14px', fontSize: 13, color: '#f9fafb', minWidth: 190,
+                    }}>
+                      <div className="mb-2 text-gray-400 text-xs">{label as string}</div>
+                      {payload.map(entry => {
+                        const key = entry.dataKey as string
+                        const val = Number(entry.value)
+                        let tooltipLabel = 'Valor'
+                        let formatted = formatEur(val)
+                        if (key === 'display_y') {
+                          if (viewMode === 'pnl') { tooltipLabel = 'Beneficio'; formatted = formatEur(val) }
+                          else if (viewMode === 'pnl_pct') { tooltipLabel = 'Beneficio'; formatted = formatPct(val) }
+                        } else if (key === 'invested_eur') {
+                          tooltipLabel = 'Invertido'
+                        }
+                        return (
+                          <div key={key} className="flex items-center justify-between gap-4 mb-1">
+                            <span className="text-gray-400 text-xs">{tooltipLabel}</span>
+                            <span style={{ color: entry.color as string }} className="font-semibold">
+                              {formatted}
                             </span>
                           </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )
-              }}
-            />
+                        )
+                      })}
+                      {events.length > 0 && (
+                        <div className="mt-2 pt-2 border-t border-gray-600 space-y-1.5">
+                          {events.map(tx => (
+                            <div key={tx.id} className="flex items-center gap-2 text-xs">
+                              <span className={`shrink-0 px-1.5 py-0.5 rounded font-bold ${
+                                tx.type === 'buy' ? 'bg-green-900/60 text-green-400' : 'bg-red-900/60 text-red-400'
+                              }`}>
+                                {tx.type === 'buy' ? 'Compra' : 'Venta'}
+                              </span>
+                              <span className="font-mono text-gray-300">{tx.asset_ticker}</span>
+                              <span className="text-gray-400 ml-auto">
+                                {formatNumber(tx.shares, 3)} × {formatEur(tx.price_eur)}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )
+                }}
+              />
+            )}
 
-            {/* Invested area — only in value mode */}
             {viewMode === 'value' && showInvested && hasInvested && (
               <Area
                 type="stepAfter"
@@ -244,7 +301,19 @@ export function PortfolioChart({ period, dateFrom, dateTo }: { period: string; d
               activeDot={{ r: 4, fill: valueColor }}
             />
 
-            {/* Transaction event dots */}
+            {/* Drag selection highlight */}
+            {isDragging && selX1 && selX2 && (
+              <ReferenceArea
+                x1={selX1}
+                x2={selX2}
+                fill="#6366f1"
+                fillOpacity={0.15}
+                stroke="#6366f1"
+                strokeOpacity={0.4}
+                strokeWidth={1}
+              />
+            )}
+
             {eventDots.map(({ snap, txs }) => {
               if (snap.display_y == null) return null
               const hasBuy = txs.some(t => t.type === 'buy')

@@ -14,6 +14,12 @@ export function PortfolioPage() {
     setDateTo(to)
   }
 
+  const handleChartRangeSelect = (from: string, to: string) => {
+    setDateFrom(from)
+    setDateTo(to)
+    setPeriod('custom')
+  }
+
   return (
     <div className="max-w-[1720px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
       <div className="flex items-center justify-between gap-3">
@@ -27,7 +33,7 @@ export function PortfolioPage() {
         />
       </div>
       <PortfolioSummaryCard period={period} dateFrom={dateFrom} dateTo={dateTo} />
-      <PortfolioChart period={period} dateFrom={dateFrom} dateTo={dateTo} />
+      <PortfolioChart period={period} dateFrom={dateFrom} dateTo={dateTo} onRangeSelect={handleChartRangeSelect} />
       <PortfolioTable period={period} dateFrom={dateFrom} dateTo={dateTo} />
     </div>
   )
