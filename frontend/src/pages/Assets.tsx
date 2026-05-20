@@ -360,6 +360,7 @@ export function AssetsPage() {
   const [detailAsset, setDetailAsset] = useState<Asset | null>(null)
   const [showCreate, setShowCreate] = useState(false)
   const [refreshingId, setRefreshingId] = useState<number | null>(null)
+  const [clearingPricesId, setClearingPricesId] = useState<number | null>(null)
   const [search, setSearch] = useState('')
   const [onlyPortfolio, setOnlyPortfolio] = useState(false)
 
@@ -382,6 +383,24 @@ export function AssetsPage() {
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
       toast.error(msg || 'Error al eliminar')
+    }
+  }
+
+  const handleClearPrices = async (asset: Asset) => {
+    if (!confirm(`¿Borrar todo el historial de precios de "${asset.ticker}"?`)) return
+    setClearingPricesId(asset.id)
+    try {
+      await assetsApi.clearPrices(asset.id)
+      if (!asset.manual_price) {
+        await pricesApi.refreshAsset(asset.id)
+        toast.success(`Precios de ${asset.ticker} borrados y recargados`)
+      } else {
+        toast.success(`Historial de precios de ${asset.ticker} borrado`)
+      }
+    } catch {
+      toast.error('Error al borrar los precios')
+    } finally {
+      setClearingPricesId(null)
     }
   }
 
@@ -496,17 +515,26 @@ export function AssetsPage() {
                   <td className="px-4 py-3 text-gray-600 dark:text-gray-300">{asset.currency}</td>
                   <td className="px-4 py-3 text-gray-500 text-xs">{marketName(asset.market_id)}</td>
                   <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
-                    {asset.manual_price ? (
-                      <button onClick={() => setPriceAsset(asset)}
-                        className="text-xs text-amber-500 hover:text-amber-600 underline whitespace-nowrap">
-                        ✎ Manual
+                    <div className="flex flex-col gap-0.5">
+                      {asset.manual_price ? (
+                        <button onClick={() => setPriceAsset(asset)}
+                          className="text-xs text-amber-500 hover:text-amber-600 underline whitespace-nowrap text-left">
+                          ✎ Manual
+                        </button>
+                      ) : (
+                        <button onClick={() => handleRefreshPrice(asset)} disabled={refreshingId === asset.id}
+                          className="text-xs text-blue-500 hover:text-blue-600 disabled:opacity-40 whitespace-nowrap text-left">
+                          {refreshingId === asset.id ? '↻ …' : '↻ Auto'}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => handleClearPrices(asset)}
+                        disabled={clearingPricesId === asset.id}
+                        className="text-xs text-gray-400 hover:text-red-500 disabled:opacity-40 whitespace-nowrap text-left"
+                      >
+                        {clearingPricesId === asset.id ? '…' : 'Borrar precios'}
                       </button>
-                    ) : (
-                      <button onClick={() => handleRefreshPrice(asset)} disabled={refreshingId === asset.id}
-                        className="text-xs text-blue-500 hover:text-blue-600 disabled:opacity-40 whitespace-nowrap">
-                        {refreshingId === asset.id ? '↻ …' : '↻ Auto'}
-                      </button>
-                    )}
+                    </div>
                   </td>
                   <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                     <div className="flex items-center gap-2 justify-end">
