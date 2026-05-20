@@ -294,9 +294,9 @@ def _compute_period_holding_data(
     gain_pct uses simple ROI (gain / period_invested) rather than
     time-weighted Modified Dietz, which is reserved for the portfolio summary.
     """
-    start_date = date_from - timedelta(days=1)
-
-    # V_ini per asset: shares held at end of start_date × ASOF price at start_date
+    # V_ini per asset: shares held at close of date_from × price at date_from.
+    # Transactions on date_from are included in V_ini (not in CF), so the per-asset
+    # "start value" aligns with the first visible chart point.
     ini_rows = conn.execute("""
     WITH holdings_at AS (
         SELECT
@@ -322,7 +322,7 @@ def _compute_period_holding_data(
     SELECT h.asset_id, p.price, p.price_eur, h.shares_held * p.price_eur AS value_eur
     FROM holdings_at h
     JOIN price_asof p ON p.asset_id = h.asset_id
-    """, [start_date, start_date, start_date, start_date, start_date]).fetchall()
+    """, [date_from, date_from, date_from, date_from, date_from]).fetchall()
 
     ini_by_asset: dict[int, dict] = {}
     for row in ini_rows:
@@ -332,11 +332,11 @@ def _compute_period_holding_data(
             "value_eur": float(row[3]),
         }
 
-    # Cash flows per asset during [date_from, date_to]
+    # Cash flows per asset: date_from transactions already in V_ini, so start from date_from+1
     tx_rows = conn.execute("""
         SELECT asset_id, type, shares::DOUBLE, price_eur::DOUBLE, commission_eur::DOUBLE, date
         FROM transactions
-        WHERE date >= ? AND date <= ?
+        WHERE date > ? AND date <= ?
         ORDER BY asset_id, date, id
     """, [date_from, date_to]).fetchall()
 
@@ -401,9 +401,11 @@ def get_modified_dietz(
     """
     Modified Dietz performance measurement for [date_from, date_to].
 
-    V_ini  = portfolio value at close of (date_from − 1), i.e. before the period opens.
-    V_fin  = current_value (today's portfolio value, passed in from get_summary).
-    CF_i   = external cash flow on date i:
+    V_ini  = portfolio value at close of date_from (the first visible chart point).
+             Transactions on date_from are included in V_ini, NOT in CF, so the
+             card and chart first point are always aligned.
+    V_fin  = current_value (passed in from get_summary).
+    CF_i   = external cash flows on dates AFTER date_from:
                buy  → positive (investor injects capital)
                sell → negative (investor withdraws capital)
              Commissions are folded in (increase cost of buys, reduce proceeds of sells).
@@ -412,15 +414,14 @@ def get_modified_dietz(
     R% = (V_fin − V_ini − ΣCF) / (V_ini + Σ(CF_i × W_i))
     Gain€ = V_fin − V_ini − ΣCF  (pure market contribution, net of capital movements)
     """
-    start_date = date_from - timedelta(days=1)
-    V_ini = get_value_at_date(conn, start_date)
+    V_ini = get_value_at_date(conn, date_from)
     V_fin = current_value
     D = max((date_to - date_from).days, 1)  # avoid /0 on same-day periods
 
     rows = conn.execute("""
         SELECT type, shares::DOUBLE, price_eur::DOUBLE, commission_eur::DOUBLE, date
         FROM transactions
-        WHERE date >= ? AND date <= ?
+        WHERE date > ? AND date <= ?
         ORDER BY date
     """, [date_from, date_to]).fetchall()
 
