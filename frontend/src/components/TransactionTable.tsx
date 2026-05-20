@@ -244,7 +244,7 @@ export function TransactionTable() {
   })
 
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
+    <div className="flex-1 min-h-0 flex flex-col bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
       <div className="flex flex-wrap items-center justify-between gap-3 p-4 border-b border-gray-100 dark:border-gray-700/50">
         <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Transacciones</h2>
         <div className="flex items-center gap-3">
@@ -300,7 +300,7 @@ export function TransactionTable() {
         )}
       </div>
 
-      <div className="overflow-x-auto">
+      <div className="flex-1 min-h-0 overflow-auto">
         <table className="w-full text-sm">
           <thead>
             {table.getHeaderGroups().map(hg => (
