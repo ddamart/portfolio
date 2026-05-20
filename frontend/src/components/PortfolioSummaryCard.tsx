@@ -55,10 +55,17 @@ export function PortfolioSummaryCard({ period, dateFrom, dateTo }: Props) {
           value={formatEur(summary.total_value_eur)}
           sub={summary.last_updated ? `Actualizado: ${summary.last_updated}` : 'Sin precios'}
         />
-        <StatCard
-          label="Invertido (en cartera)"
-          value={formatEur(summary.total_invested_eur)}
-        />
+        {hasPeriod ? (
+          <StatCard
+            label="Valor inicio período"
+            value={formatEur(summary.period_start_value_eur!)}
+          />
+        ) : (
+          <StatCard
+            label="Invertido (en cartera)"
+            value={formatEur(summary.total_invested_eur)}
+          />
+        )}
         {hasPeriod ? (
           <StatCard
             label={`Rendimiento ${periodLabel}`}

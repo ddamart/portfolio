@@ -279,14 +279,16 @@ def _compute_period_holding_data(
     date_to: date,
 ) -> dict:
     """
-    Per-asset Modified Dietz performance for [date_from, date_to].
+    Per-asset period performance for [date_from, date_to].
 
     Returns dict mapping asset_id → partial HoldingRow field overrides:
-      period_start_price, period_start_price_eur, period_start_value_eur,
+      period_start_value_eur, period_invested_eur, period_avg_price_eur,
       period_gain_eur, period_gain_pct.
+
+    gain_pct uses simple ROI (gain / period_invested) rather than
+    time-weighted Modified Dietz, which is reserved for the portfolio summary.
     """
     start_date = date_from - timedelta(days=1)
-    D = max((date_to - date_from).days, 1)
 
     # V_ini per asset: shares held at end of start_date × ASOF price at start_date
     ini_rows = conn.execute("""
@@ -359,24 +361,19 @@ def _compute_period_holding_data(
         v_fin = float(h.value_eur)
 
         cf_total = 0.0
-        weighted_cf = 0.0
         for tx_type, shares, price_eur, commission_eur, tx_date in cfs_by_asset.get(asset_id, []):
-            di = (tx_date - date_from).days
-            wi = (D - di) / D
             cf = (shares * price_eur + commission_eur) if tx_type == "buy" \
                  else -(shares * price_eur - commission_eur)
             cf_total += cf
-            weighted_cf += cf * wi
 
-        # period_invested: capital at play over the period (start value + net cash flows)
-        # This equals V_ini + buy_cost − sell_proceeds, consistent with Modified Dietz gain:
-        #   period_gain_eur = v_fin − period_invested_eur
+        # period_invested = V_ini + net cash flows (buy cost − sell proceeds + commissions)
+        # Simple ROI: gain / period_invested — consistent with the € amount shown.
+        # Time-weighted Modified Dietz is reserved for the portfolio-level summary.
         period_invested = v_ini + cf_total
         period_avg_price = (period_invested / h.total_shares) if h.total_shares > 0.000001 else None
 
-        denominator = v_ini + weighted_cf
         gain_eur = v_fin - period_invested
-        gain_pct = (gain_eur / denominator * 100) if abs(denominator) > 0.01 else 0.0
+        gain_pct = (gain_eur / period_invested * 100) if abs(period_invested) > 0.01 else 0.0
 
         result[asset_id] = {
             "period_start_value_eur": ini["value_eur"] if ini else None,
@@ -483,12 +480,19 @@ def get_summary(
     FROM joined
     """).fetchone()
 
-    # Resolve date_from from period string if not provided explicitly
-    is_period = period and period not in ("all", "custom")
-    if is_period and not date_from:
-        date_from, date_to = _period_to_date_range(period)
+    # Resolve period mode and date range
+    if period == "all":
+        is_period = False
+    elif period and period != "custom":
+        # Named period (ytd, 1m, …) — resolve dates if not already provided
+        is_period = True
+        if not date_from:
+            date_from, date_to = _period_to_date_range(period)
+    else:
+        # custom period string or no period at all — active only when date_from is explicit
+        is_period = date_from is not None
 
-    # Realized P&L: period-filtered when a non-"all" period is active
+    # Realized P&L: period-filtered when period mode is active
     if is_period and date_from:
         realized = get_realized_pnl(conn, date_from=date_from, date_to=date_to)
     else:

@@ -30,7 +30,7 @@ export function PortfolioTable({ period, dateFrom, dateTo }: { period: string; d
   const [manualPriceAsset, setManualPriceAsset] = useState<HoldingRow | null>(null)
   const { lastRefreshAt } = useRefresh()
 
-  const hasPeriod = period !== 'all'
+  const hasPeriod = period !== 'all' && !(period === 'custom' && !dateFrom)
 
   const load = () => {
     setLoading(true)
@@ -218,14 +218,14 @@ export function PortfolioTable({ period, dateFrom, dateTo }: { period: string; d
         )
       },
     }),
-    col.accessor('daily_change_pct', {
+    ...(!hasPeriod ? [col.accessor('daily_change_pct', {
       header: 'Var. Diaria',
       cell: info => {
         const v = info.getValue()
         if (v == null) return <span className="text-gray-400">—</span>
         return <span className={pnlClass(v)}>{formatPct(v)}</span>
       },
-    }),
+    })] : []),
     col.accessor('allocation_pct', {
       header: 'Asignación',
       cell: info => (

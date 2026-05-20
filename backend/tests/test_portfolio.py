@@ -1,4 +1,5 @@
 """Tests for /api/portfolio endpoints."""
+import pytest
 from .conftest import create_asset, create_buy, create_fx_rate
 import app.database as db_module
 
@@ -259,6 +260,32 @@ class TestModifiedDietz:
         assert abs(data["period_return_eur"]) < 1.0
         assert abs(data["period_return_pct"]) < 0.1
 
+
+class TestPeriodHoldingPct:
+    """period_gain_pct must be simple ROI: gain_eur / period_invested, not Modified Dietz."""
+
+    def test_period_gain_pct_simple_roi(self, client):
+        """gain_pct = gain_eur / period_invested (not time-weighted)."""
+        asset = create_asset(client, ticker="SIMPLEROI", currency="EUR")
+        # Existing holding before the YTD 2026 period
+        create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR",
+                   date="2025-12-31", broker="degiro")
+        seed_price(asset["id"], "2025-12-31", 100.0)   # V_ini = 1 000
+        # Large buy very late in the period (Modified Dietz would inflate %)
+        create_buy(client, asset["id"], shares=90, price=100.0, currency="EUR",
+                   date="2026-05-10", broker="degiro")
+        seed_price(asset["id"], "2026-05-10", 100.0)
+        seed_price(asset["id"], "2026-05-19", 110.0)   # 10 % price gain
+
+        rows = client.get("/api/portfolio/holdings?period=ytd").json()
+        row = next(r for r in rows if r["ticker"] == "SIMPLEROI")
+
+        # period_invested = 1 000 + 9 000 = 10 000
+        # gain_eur = 100 × 110 − 10 000 = 1 000
+        # simple ROI = 1 000 / 10 000 = 10 %
+        assert row["period_gain_eur"] == pytest.approx(1000.0, abs=5.0)
+        assert row["period_gain_pct"] == pytest.approx(10.0, abs=0.5)
+
     def test_period_fields_absent_for_all(self, client):
         """When period='all' or not provided, period_return fields must be None."""
         asset = create_asset(client, ticker="A", currency="EUR")
@@ -271,6 +298,3 @@ class TestModifiedDietz:
             assert data["period_return_eur"] is None, f"Expected None for {url}"
             assert data["period_return_pct"] is None
             assert data["period_start_value_eur"] is None
-
-
-import pytest
