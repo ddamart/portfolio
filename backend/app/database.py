@@ -1,6 +1,7 @@
 import logging
 import os
 import threading
+import time
 import duckdb
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,24 @@ def get_db() -> duckdb.DuckDBPyConnection:
     return _local.conn
 
 
+def _connect_with_retry(path: str, timeout: int = 15) -> duckdb.DuckDBPyConnection:
+    deadline = time.monotonic() + timeout
+    interval = 0.5
+    while True:
+        try:
+            return duckdb.connect(path)
+        except Exception as e:
+            err = str(e)
+            if ("being utilized by another process" not in err and "already open" not in err.lower()):
+                raise
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"Database file is still locked after {timeout}s. "
+                    "Kill the previous server process and retry."
+                ) from e
+            time.sleep(interval)
+
+
 def init_db(path: str) -> None:
     global _db_path
     if path != ":memory:":
@@ -60,10 +79,10 @@ def init_db(path: str) -> None:
             os.remove(wal)
             bootstrap = duckdb.connect(path)
         elif "being utilized by another process" in err or "already open" in err.lower():
-            raise RuntimeError(
-                "Database file is locked by another process. "
-                "Stop the previous server instance and retry."
-            ) from e
+            # The previous server process may still be releasing the lock.
+            # Retry for up to 15 seconds before giving up.
+            logger.warning("DuckDB file locked — waiting for previous instance to exit...")
+            bootstrap = _connect_with_retry(path, timeout=15)
         else:
             raise
     _apply_schema(bootstrap)
