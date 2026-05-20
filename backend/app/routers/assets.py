@@ -135,6 +135,15 @@ def asset_price_history(asset_id: int, period: str = "1y"):
     return [{"date": str(r[0]), "price": float(r[1]), "price_eur": float(r[2]), "currency": r[3]} for r in rows]
 
 
+@router.delete("/{asset_id}/prices", status_code=204)
+def clear_asset_prices(asset_id: int):
+    """Delete all price history for an asset so it can be re-fetched from scratch."""
+    conn = get_db()
+    if not conn.execute("SELECT id FROM assets WHERE id = ?", [asset_id]).fetchone():
+        raise HTTPException(status_code=404, detail="Asset not found")
+    conn.execute("DELETE FROM prices WHERE asset_id = ?", [asset_id])
+
+
 @router.delete("/{asset_id}", status_code=204)
 def delete_asset(asset_id: int):
     conn = get_db()
