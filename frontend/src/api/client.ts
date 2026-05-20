@@ -11,7 +11,7 @@ export interface Asset {
   id: number
   name: string
   ticker: string
-  type: 'etf' | 'stock' | 'fund'
+  type: 'etf' | 'stock' | 'fund' | 'balance'
   currency: string
   market_id: number | null
   image_url: string | null
@@ -95,6 +95,10 @@ export interface HoldingRow {
   period_avg_price_eur: number | null    // period_invested_eur / total_shares
   period_gain_eur: number | null
   period_gain_pct: number | null
+  // Balance asset fields (only populated when type='balance')
+  balance_value_eur: number | null
+  balance_contributions_eur: number | null
+  balance_last_snapshot_date: string | null
 }
 
 export interface PortfolioSummary {
