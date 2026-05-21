@@ -78,7 +78,7 @@ def import_entries(asset_id: int, body: list[_ImportItem], replace: bool = True)
     With replace=true (default) all existing entries of the same type(s) are
     deleted before insertion — safe to re-run when Openbank data is refreshed.
     """
-    from dateutil.parser import parse as _parse_date
+    import datetime as _dt
 
     conn = get_db()
     if not conn.execute("SELECT id FROM assets WHERE id = ? AND type = 'balance'", [asset_id]).fetchone():
@@ -96,7 +96,7 @@ def import_entries(asset_id: int, body: list[_ImportItem], replace: bool = True)
     inserted, errors = 0, []
     for item in body:
         try:
-            d = _parse_date(item.date, dayfirst=True).date()
+            d = _dt.date.fromisoformat(item.date)
             conn.execute(
                 "INSERT INTO balance_entries (id, asset_id, date, type, amount_eur, notes) "
                 "VALUES (nextval('balance_entries_id_seq'), ?, ?, ?, ?, NULL)",

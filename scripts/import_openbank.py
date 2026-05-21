@@ -87,22 +87,22 @@ def main() -> None:
         data = json.load(f)
 
     entries = data["valuations"]
-    print(f"Loaded {len(entries)} entries  ({entries[0]['bookingDate']} → {entries[-1]['bookingDate']})")
+    print(f"Loaded {len(entries)} entries  ({entries[0]['bookingDate']} to {entries[-1]['bookingDate']})")
 
     snapshots = extract_snapshots(entries)
     deposits = detect_deposits(entries, threshold=args.deposit_threshold)
 
-    print(f"\n── Detected cash flows ────────────────────────────────")
+    print(f"\n-- Detected cash flows ------------------------------------------")
     for d in deposits:
         tag = "+" if d["type"] == "deposit" else "-"
-        print(f"  {d['date']}  {tag}{d['amount_eur']:>10,.2f} €  ({d['type']})")
+        print(f"  {d['date']}  {tag}{d['amount_eur']:>10,.2f} EUR  ({d['type']})")
     total_dep = sum(d["amount_eur"] for d in deposits if d["type"] == "deposit")
-    print(f"  Total deposits detected: {total_dep:,.2f} €")
+    print(f"  Total deposits detected: {total_dep:,.2f} EUR")
 
-    print(f"\n── Snapshots ───────────────────────────────────────────")
+    print(f"\n-- Snapshots ----------------------------------------------------")
     print(f"  {len(snapshots)} daily valuations")
-    print(f"  First: {snapshots[0]['date']}  {snapshots[0]['amount_eur']:>10,.2f} €")
-    print(f"  Last:  {snapshots[-1]['date']}  {snapshots[-1]['amount_eur']:>10,.2f} €")
+    print(f"  First: {snapshots[0]['date']}  {snapshots[0]['amount_eur']:>10,.2f} EUR")
+    print(f"  Last:  {snapshots[-1]['date']}  {snapshots[-1]['amount_eur']:>10,.2f} EUR")
 
     if args.dry_run:
         print("\n[DRY RUN] Nothing posted. Remove --dry-run to import.")
@@ -111,27 +111,27 @@ def main() -> None:
     base = args.base_url.rstrip("/")
 
     # Always import snapshots (replace=true wipes and rewrites all snapshot entries)
-    print(f"\nPosting {len(snapshots)} snapshots to asset {args.asset_id}…")
+    print(f"\nPosting {len(snapshots)} snapshots to asset {args.asset_id}...")
     r = requests.post(f"{base}/api/balance/{args.asset_id}/import?replace=true", json=snapshots, timeout=30)
     r.raise_for_status()
     res = r.json()
-    print(f"  ✓ inserted={res['inserted']}  errors={len(res['errors'])}")
+    print(f"  OK inserted={res['inserted']}  errors={len(res['errors'])}")
     for e in res["errors"][:5]:
-        print(f"    ✗ {e}")
+        print(f"    ERR {e}")
 
     if args.import_deposits:
-        print(f"\nPosting {len(deposits)} detected deposits…")
+        print(f"\nPosting {len(deposits)} detected deposits...")
         r = requests.post(f"{base}/api/balance/{args.asset_id}/import?replace=true", json=deposits, timeout=30)
         r.raise_for_status()
         res = r.json()
-        print(f"  ✓ inserted={res['inserted']}  errors={len(res['errors'])}")
+        print(f"  OK inserted={res['inserted']}  errors={len(res['errors'])}")
         for e in res["errors"][:5]:
-            print(f"    ✗ {e}")
+            print(f"    ERR {e}")
     else:
-        print("\n[Deposits skipped — your manually entered ones are preserved]")
+        print("\n[Deposits skipped -- your manually entered ones are preserved]")
         print("  Pass --import-deposits to override with auto-detected amounts.")
 
-    print("\nDone ✓")
+    print("\nDone.")
 
 
 if __name__ == "__main__":
