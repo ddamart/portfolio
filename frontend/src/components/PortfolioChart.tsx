@@ -51,15 +51,23 @@ export function PortfolioChart({ period, dateFrom, dateTo, onRangeSelect, broker
   }, [period, dateFrom, dateTo, broker, assetType, lastRefreshAt])
 
   const displayData = useMemo(() => {
+    const hasPeriod = period !== 'all' && !(period === 'custom' && !dateFrom)
+    const periodStart = hasPeriod && data.length > 0 ? data[0].value_eur : null
     return data.map(d => {
       if (viewMode === 'value') return { ...d, display_y: d.value_eur }
+      if (hasPeriod && periodStart != null) {
+        const pnl = d.value_eur - periodStart
+        if (viewMode === 'pnl') return { ...d, display_y: pnl }
+        const pct = periodStart > 0 ? (pnl / periodStart) * 100 : 0
+        return { ...d, display_y: pct }
+      }
       if (d.invested_eur == null) return { ...d, display_y: null as number | null }
       const pnl = d.value_eur - d.invested_eur
       if (viewMode === 'pnl') return { ...d, display_y: pnl }
       const pct = d.invested_eur > 0 ? (pnl / d.invested_eur) * 100 : 0
       return { ...d, display_y: pct }
     })
-  }, [data, viewMode])
+  }, [data, viewMode, period, dateFrom])
 
   const snapToDisplay = (dateStr: string) => {
     if (displayData.length === 0) return null
