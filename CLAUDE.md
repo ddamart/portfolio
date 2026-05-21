@@ -18,7 +18,7 @@ A personal investment portfolio tracker. The owner holds Spanish mutual funds (F
 ```bash
 cd backend && python -m pytest tests/ -q
 ```
-105 tests must pass. Run them after any Python change, then commit.
+115 tests must pass. Run them after any Python change, then commit.
 
 ### Commit after every feature or fix
 Pattern: run pytest → fix failures → commit. Never leave working changes uncommitted at end of session.
