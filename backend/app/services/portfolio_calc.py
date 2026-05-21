@@ -542,7 +542,11 @@ def _compute_period_holding_data(
         period_avg_price = (period_invested / h.total_shares) if h.total_shares > 0.000001 else None
 
         gain_eur = v_fin - period_invested
-        gain_pct = (gain_eur / period_invested * 100) if abs(period_invested) > 0.01 else 0.0
+        # Use max(period_invested, v_ini) as denominator so sells within the period
+        # cannot collapse it to near-zero and produce nonsensical percentages.
+        # When there are no sells (or new positions), max() has no effect.
+        pct_denom = max(period_invested, v_ini)
+        gain_pct = (gain_eur / pct_denom * 100) if abs(pct_denom) > 0.01 else 0.0
 
         result[asset_id] = {
             "period_start_value_eur": ini["value_eur"] if ini else None,
