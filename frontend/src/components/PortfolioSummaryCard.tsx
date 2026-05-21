@@ -94,18 +94,18 @@ export function PortfolioSummaryCard({ period, dateFrom, dateTo, broker, assetTy
             compact
           />
           <StatCard
-            label={hasPeriod ? `Ganancia realizada ${periodLabel}` : 'Ganancia realizada'}
-            value={formatEur(summary.realized_pnl_eur)}
-            sub={formatPct(summary.realized_pnl_pct)}
-            valueClass={pnlClass(summary.realized_pnl_eur)}
+            label="Rendimiento total"
+            value={formatEur(summary.total_pnl_eur)}
+            sub={formatPct(summary.total_pnl_pct)}
+            valueClass={pnlClass(summary.total_pnl_eur)}
             compact
           />
-          <StatCard
-            label={hasPeriod ? `G. realizada neta ${periodLabel}` : 'Ganancia realizada (neta)'}
-            value={formatEur(summary.realized_pnl_net_eur)}
-            sub={`${formatPct(summary.realized_pnl_net_pct)} · post comisiones`}
-            valueClass={pnlClass(summary.realized_pnl_net_eur)}
-            compact
+          <RealizedCard
+            label={hasPeriod ? `Ganancia realizada ${periodLabel}` : 'Ganancia realizada'}
+            grossEur={summary.realized_pnl_eur}
+            grossPct={summary.realized_pnl_pct}
+            netEur={summary.realized_pnl_net_eur}
+            netPct={summary.realized_pnl_net_pct}
           />
         </div>
       )}
@@ -121,6 +121,26 @@ function StatCard({
       <p className="text-xs text-gray-500 dark:text-gray-400 mb-1 uppercase tracking-wide">{label}</p>
       <p className={`${compact ? 'text-xl' : 'text-2xl'} font-bold text-gray-900 dark:text-white ${valueClass}`}>{value}</p>
       {sub && <p className={`text-sm mt-0.5 ${valueClass || 'text-gray-400'}`}>{sub}</p>}
+    </div>
+  )
+}
+
+function RealizedCard({
+  label, grossEur, grossPct, netEur, netPct,
+}: { label: string; grossEur: number; grossPct: number; netEur: number; netPct: number }) {
+  const gc = pnlClass(grossEur)
+  const nc = pnlClass(netEur)
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4">
+      <p className="text-xs text-gray-500 dark:text-gray-400 mb-1 uppercase tracking-wide">{label}</p>
+      <div className="flex items-baseline gap-2">
+        <p className={`text-xl font-bold ${gc}`}>{formatEur(grossEur)}</p>
+        <p className={`text-sm ${gc}`}>{formatPct(grossPct)}</p>
+      </div>
+      <div className="flex items-baseline gap-2 mt-0.5">
+        <p className={`text-sm ${nc || 'text-gray-400 dark:text-gray-500'}`}>{formatEur(netEur)}</p>
+        <p className={`text-xs ${nc || 'text-gray-400 dark:text-gray-500'}`}>{formatPct(netPct)} · neta</p>
+      </div>
     </div>
   )
 }
