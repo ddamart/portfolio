@@ -915,13 +915,11 @@ def get_chart_data(
             ch.asset_id,
             ch.price_date,
             ch.shares_held,
-            LAST_VALUE(p.price_eur::DOUBLE IGNORE NULLS) OVER (
-                PARTITION BY ch.asset_id
-                ORDER BY ch.price_date
-                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-            ) AS price_eur
+            p.price_eur::DOUBLE AS price_eur
         FROM cumulative_holdings ch
-        LEFT JOIN prices p ON p.asset_id = ch.asset_id AND p.date = ch.price_date
+        ASOF LEFT JOIN (
+            SELECT asset_id, date, price_eur FROM prices ORDER BY asset_id, date
+        ) p ON p.asset_id = ch.asset_id AND ch.price_date >= p.date
     )
     SELECT
         price_date AS date,

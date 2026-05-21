@@ -300,6 +300,85 @@ class TestPeriodHoldingPct:
             assert data["period_start_value_eur"] is None
 
 
+class TestChartPriceFillForward:
+    """
+    Regression: when the chart window starts on date D, assets whose last price
+    is on D-1 (or earlier) were excluded from value_eur but still counted in
+    invested_eur, producing a large false negative G/P on the first chart point.
+
+    The fix uses ASOF JOIN so prices outside the window are filled forward.
+    """
+
+    def test_asset_with_prior_price_included_on_window_start(self, client):
+        """
+        Asset A: bought before window, last price before window start.
+        Asset B: bought on window start, price on window start (anchors date_spine).
+        Without ASOF fix: A excluded from value on D, G/P = value_B - (cost_A + cost_B) < 0.
+        With fix: A uses its last price via fill-forward → G/P is correct.
+        """
+        # Asset A: 10 shares @ 200 EUR bought on 2024-01-01, price only on 2024-01-01
+        a = create_asset(client, ticker="OLDASSET", currency="EUR")
+        create_buy(client, a["id"], shares=10, price=200.0, currency="EUR",
+                   date="2024-01-01", broker="degiro")
+        seed_price(a["id"], "2024-01-01", 200.0)  # last price BEFORE window
+
+        # Asset B: 5 shares @ 50 EUR bought on 2024-01-02, prices from 2024-01-02 onward
+        b = create_asset(client, ticker="NEWASSET", currency="EUR")
+        create_buy(client, b["id"], shares=5, price=50.0, currency="EUR",
+                   date="2024-01-02", broker="degiro")
+        seed_price(b["id"], "2024-01-02", 50.0)
+        seed_price(b["id"], "2024-01-03", 55.0)
+
+        # cost_A = 10 × 200 = 2 000, cost_B = 5 × 50 = 250, total = 2 250
+        # value on 2024-01-02 (with fill-forward): A = 10×200 = 2000, B = 5×50 = 250 → 2 250
+        # G/P = 2 250 - 2 250 = 0
+        r = client.get("/api/portfolio/chart?date_from=2024-01-02&date_to=2024-01-03")
+        assert r.status_code == 200
+        data = r.json()
+        assert len(data) >= 1
+        first = next(d for d in data if d["date"] == "2024-01-02")
+        # Without fix: first["value_eur"] would be ~250 (only B), making G/P = 250-2250 = -2000
+        assert first["value_eur"] == pytest.approx(2250.0, abs=5.0), (
+            f"Asset A price not filled forward: value={first['value_eur']} (expected ~2250)"
+        )
+        invested = first.get("invested_eur")
+        if invested is not None:
+            gp = first["value_eur"] - invested
+            assert gp == pytest.approx(0.0, abs=5.0), (
+                f"False G/P on first chart point: {gp} (expected ~0)"
+            )
+
+    def test_first_window_day_matches_wider_window(self, client):
+        """
+        Chart value on D must be identical whether the window starts on D or D-1.
+        This is the exact symptom the user reported.
+        """
+        a = create_asset(client, ticker="ASSET_PREV", currency="EUR")
+        create_buy(client, a["id"], shares=8, price=100.0, currency="EUR",
+                   date="2024-01-01", broker="degiro")
+        seed_price(a["id"], "2024-01-01", 100.0)  # last price before window
+
+        b = create_asset(client, ticker="ASSET_DAY", currency="EUR")
+        create_buy(client, b["id"], shares=3, price=50.0, currency="EUR",
+                   date="2024-01-02", broker="degiro")
+        seed_price(b["id"], "2024-01-02", 50.0)
+
+        # Window starting ON 2024-01-02
+        r1 = client.get("/api/portfolio/chart?date_from=2024-01-02&date_to=2024-01-04")
+        data1 = {d["date"]: d for d in r1.json()}
+
+        # Window starting one day BEFORE (2024-01-01)
+        r2 = client.get("/api/portfolio/chart?date_from=2024-01-01&date_to=2024-01-04")
+        data2 = {d["date"]: d for d in r2.json()}
+
+        assert "2024-01-02" in data1 and "2024-01-02" in data2
+        v1 = data1["2024-01-02"]["value_eur"]
+        v2 = data2["2024-01-02"]["value_eur"]
+        assert v1 == pytest.approx(v2, abs=1.0), (
+            f"value_eur on 2024-01-02 differs by window start: {v1} vs {v2}"
+        )
+
+
 class TestCustomDateRange:
     """Custom date_from/date_to must use historical prices, not today's."""
 
