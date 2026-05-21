@@ -145,6 +145,7 @@ export function TransactionTable() {
     }),
     col.accessor('price', {
       header: 'Precio',
+      sortingFn: (a, b) => a.original.price_eur - b.original.price_eur,
       cell: info => {
         const row = info.row.original
         const isEur = row.currency === 'EUR'
@@ -189,6 +190,14 @@ export function TransactionTable() {
     col.display({
       id: 'commission_pct',
       header: 'Com. %',
+      enableSorting: true,
+      sortingFn: (a, b) => {
+        const tradeA = a.original.shares * a.original.price_eur
+        const tradeB = b.original.shares * b.original.price_eur
+        const pctA = tradeA > 0 ? a.original.commission_eur / tradeA : 0
+        const pctB = tradeB > 0 ? b.original.commission_eur / tradeB : 0
+        return pctA - pctB
+      },
       cell: info => {
         const row = info.row.original
         const tradeEur = row.shares * row.price_eur
@@ -201,9 +210,14 @@ export function TransactionTable() {
         )
       },
     }),
-    col.display({
+    col.accessor('realized_pnl_eur', {
       id: 'realized_pnl',
       header: 'P&L Real.',
+      sortingFn: (a, b) => {
+        const va = a.original.realized_pnl_eur ?? -Infinity
+        const vb = b.original.realized_pnl_eur ?? -Infinity
+        return va - vb
+      },
       cell: info => {
         const row = info.row.original
         if (row.type !== 'sell' || row.realized_pnl_eur == null || row.cost_basis_eur == null) {
