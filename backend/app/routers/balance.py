@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from app.database import get_db
 from app.models.balance import BalanceEntryCreate, BalanceEntryOut
@@ -62,6 +63,50 @@ def create_entry(asset_id: int, body: BalanceEntryCreate):
         notes=row[5],
         created_at=row[6],
     )
+
+
+class _ImportItem(BaseModel):
+    date: str
+    amount_eur: float
+    type: str = "snapshot"
+
+
+@router.post("/{asset_id}/import")
+def import_entries(asset_id: int, body: list[_ImportItem], replace: bool = True):
+    """Bulk-import balance entries.
+
+    With replace=true (default) all existing entries of the same type(s) are
+    deleted before insertion — safe to re-run when Openbank data is refreshed.
+    """
+    from dateutil.parser import parse as _parse_date
+
+    conn = get_db()
+    if not conn.execute("SELECT id FROM assets WHERE id = ? AND type = 'balance'", [asset_id]).fetchone():
+        raise HTTPException(status_code=404, detail="Balance asset not found")
+
+    valid_types = {"deposit", "withdrawal", "snapshot"}
+    bad = [i.type for i in body if i.type not in valid_types]
+    if bad:
+        raise HTTPException(status_code=422, detail=f"Invalid type(s): {set(bad)}")
+
+    if replace:
+        for t in {i.type for i in body}:
+            conn.execute("DELETE FROM balance_entries WHERE asset_id = ? AND type = ?", [asset_id, t])
+
+    inserted, errors = 0, []
+    for item in body:
+        try:
+            d = _parse_date(item.date, dayfirst=True).date()
+            conn.execute(
+                "INSERT INTO balance_entries (id, asset_id, date, type, amount_eur, notes) "
+                "VALUES (nextval('balance_entries_id_seq'), ?, ?, ?, ?, NULL)",
+                [asset_id, d, item.type, item.amount_eur],
+            )
+            inserted += 1
+        except Exception as exc:
+            errors.append({"date": item.date, "error": str(exc)})
+
+    return {"inserted": inserted, "errors": errors}
 
 
 @router.delete("/entries/{entry_id}", status_code=204)
