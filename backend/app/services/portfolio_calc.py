@@ -613,7 +613,9 @@ def get_modified_dietz(
     CF_i   = external cash flows on dates AFTER date_from:
                buy  → positive (investor injects capital)
                sell → negative (investor withdraws capital)
-             Commissions are folded in (increase cost of buys, reduce proceeds of sells).
+               balance deposit → positive (same as buy)
+               balance withdrawal → negative (same as sell)
+             Commissions are folded into transaction CFs.
     W_i    = (D − d_i) / D  — fraction of the period still remaining when CF_i occurred.
 
     R% = (V_fin − V_ini − ΣCF) / (V_ini + Σ(CF_i × W_i))
@@ -654,6 +656,26 @@ def get_modified_dietz(
 
         cf_total += cf
         weighted_cf += cf * wi
+
+    # Balance deposits/withdrawals are external CFs (no broker filter applies to balance)
+    if (not type_list or 'balance' in type_list) and not broker_list:
+        bal_cf_rows = conn.execute("""
+            SELECT be.type, be.amount_eur::DOUBLE, be.date
+            FROM balance_entries be
+            JOIN assets a ON a.id = be.asset_id
+            WHERE a.type = 'balance'
+              AND be.type IN ('deposit', 'withdrawal')
+              AND be.date > ? AND be.date <= ?
+            ORDER BY be.date
+        """, [date_from, date_to]).fetchall()
+
+        for cf_type, amount_eur, cf_date in bal_cf_rows:
+            cf_date = cf_date if isinstance(cf_date, date) else cf_date.date()
+            di = (cf_date - date_from).days
+            wi = (D - di) / D
+            cf = amount_eur if cf_type == 'deposit' else -amount_eur
+            cf_total += cf
+            weighted_cf += cf * wi
 
     denominator = V_ini + weighted_cf
     gain_eur = V_fin - V_ini - cf_total
@@ -780,17 +802,9 @@ def get_summary(
             balance_gross_deposits = float(bc_row[1]) if bc_row[1] is not None else 0.0
             balance_gross_withdrawals = float(bc_row[2]) if bc_row[2] is not None else 0.0
 
-    # Augment realized metrics with balance account data
+    # Balance deposits count towards total ever invested
     if balance_gross_deposits > 0:
         realized["total_invested_ever_eur"] += balance_gross_deposits
-    if balance_gross_withdrawals > 0:
-        # Proportional gain: realized gain = withdrawals × total_pnl / (snapshot + withdrawals)
-        balance_total_produced = balance_value + balance_gross_withdrawals
-        balance_total_pnl = balance_total_produced - balance_gross_deposits
-        if balance_total_produced > 0 and balance_total_pnl > 0:
-            balance_realized_gain = balance_gross_withdrawals * balance_total_pnl / balance_total_produced
-            realized["realized_pnl_eur"] += balance_realized_gain
-            realized["realized_pnl_net_eur"] += balance_realized_gain
 
     # fetchone() returns None if the inner query has zero rows (no prices loaded yet)
     if (row is None or row[0] is None) and balance_value == 0.0:
