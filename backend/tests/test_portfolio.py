@@ -430,3 +430,70 @@ class TestCustomDateRange:
         row = next(r for r in rows if r["ticker"] == "HIST3")
         # period_gain_eur = 10 × 120 − 10 × 100 = 200  (using March price, not June)
         assert row["period_gain_eur"] == pytest.approx(200.0, abs=5.0)
+
+
+class TestBalanceSummaryMetrics:
+    """Balance account deposits must appear in portfolio-level summary metrics."""
+
+    def _create_balance_asset(self, client, ticker="OBANKBAL"):
+        r = client.post("/api/assets", json={
+            "name": "Openbank Balance", "ticker": ticker,
+            "type": "balance", "currency": "EUR", "manual_price": True,
+        })
+        assert r.status_code == 201, r.text
+        return r.json()
+
+    def _add_entry(self, client, asset_id, etype, amount, date="2024-01-15"):
+        r = client.post(f"/api/balance/{asset_id}", json={
+            "date": date, "type": etype, "amount_eur": amount,
+        })
+        assert r.status_code == 201, r.text
+        return r.json()
+
+    def test_balance_deposit_counts_in_total_invested_ever(self, client):
+        """total_invested_ever_eur must include balance deposits."""
+        bal = self._create_balance_asset(client)
+        self._add_entry(client, bal["id"], "deposit", 5000.0, "2024-01-15")
+        self._add_entry(client, bal["id"], "snapshot", 5200.0, "2024-06-01")
+
+        data = client.get("/api/portfolio/summary").json()
+        assert data["total_invested_ever_eur"] == pytest.approx(5000.0, abs=1.0), (
+            f"Expected balance deposit 5000 in total_invested_ever_eur, got {data['total_invested_ever_eur']}"
+        )
+
+    def test_balance_deposit_plus_tx_buys_in_total_invested_ever(self, client):
+        """total_invested_ever_eur = sum of all buy costs + all balance deposits."""
+        # Regular tx asset
+        stock = create_asset(client, ticker="STOCK1", currency="EUR")
+        create_buy(client, stock["id"], shares=10, price=100.0, currency="EUR")
+        seed_price(stock["id"], "2024-01-02", 110.0)
+
+        # Balance asset with deposit
+        bal = self._create_balance_asset(client)
+        self._add_entry(client, bal["id"], "deposit", 3000.0, "2024-02-01")
+        self._add_entry(client, bal["id"], "snapshot", 3100.0, "2024-06-01")
+
+        data = client.get("/api/portfolio/summary").json()
+        # 10 * 100 (buy) + 3000 (deposit) = 4000
+        assert data["total_invested_ever_eur"] == pytest.approx(4000.0, abs=1.0), (
+            f"Expected 4000, got {data['total_invested_ever_eur']}"
+        )
+
+    def test_balance_value_in_total_value(self, client):
+        """Latest balance snapshot is included in total portfolio value."""
+        bal = self._create_balance_asset(client)
+        self._add_entry(client, bal["id"], "snapshot", 12000.0, "2024-06-01")
+
+        data = client.get("/api/portfolio/summary").json()
+        assert data["total_value_eur"] == pytest.approx(12000.0, abs=1.0)
+
+    def test_multiple_deposits_sum_correctly(self, client):
+        """Multiple deposits across dates all count towards total_invested_ever_eur."""
+        bal = self._create_balance_asset(client)
+        self._add_entry(client, bal["id"], "deposit", 1000.0, "2024-01-01")
+        self._add_entry(client, bal["id"], "deposit", 2000.0, "2024-04-01")
+        self._add_entry(client, bal["id"], "deposit", 500.0, "2024-07-01")
+        self._add_entry(client, bal["id"], "snapshot", 3800.0, "2024-08-01")
+
+        data = client.get("/api/portfolio/summary").json()
+        assert data["total_invested_ever_eur"] == pytest.approx(3500.0, abs=1.0)

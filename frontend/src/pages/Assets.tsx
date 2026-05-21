@@ -456,9 +456,12 @@ export function AssetsPage() {
       fund:    'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
       balance: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
     }
+    const label: Record<string, string> = {
+      stock: 'Stock', etf: 'ETF', fund: 'Fondo', balance: 'Cartera',
+    }
     return (
       <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cls[type] ?? ''}`}>
-        {type.toUpperCase()}
+        {label[type] ?? type.toUpperCase()}
       </span>
     )
   }

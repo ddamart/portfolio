@@ -24,6 +24,10 @@ const BROKER_LABEL: Record<string, string> = {
   degiro: 'Degiro',
 }
 
+const TYPE_LABEL: Record<string, string> = {
+  stock: 'Stock', etf: 'ETF', fund: 'Fondo', balance: 'Cartera',
+}
+
 export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: {
   period: string
   dateFrom?: string
@@ -78,8 +82,8 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
     col.accessor('type', {
       header: 'Tipo',
       cell: info => (
-        <span className="capitalize text-sm px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
-          {info.getValue()}
+        <span className="text-sm px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
+          {TYPE_LABEL[info.getValue()] ?? info.getValue()}
         </span>
       ),
     }),
