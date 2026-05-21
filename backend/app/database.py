@@ -100,6 +100,108 @@ def close_db() -> None:
     _db_path = ""
 
 
+def _migrate_assets_add_balance(conn: duckdb.DuckDBPyConnection) -> None:
+    """Recreate assets + FK-dependent tables to expand the type CHECK to include 'balance'.
+
+    DuckDB does not implement ALTER TABLE DROP/ADD CONSTRAINT, so table recreation
+    is the only way to change an existing CHECK constraint.
+    """
+    logger.info("Migrating assets table: adding 'balance' to type CHECK constraint")
+    assets = conn.execute(
+        "SELECT id, name, ticker, type, currency, market_id, image_url, manual_price, isin, created_at FROM assets"
+    ).fetchall()
+    transactions = conn.execute(
+        "SELECT id, asset_id, type, broker, shares, price, price_eur, currency, "
+        "commission, commission_currency, commission_eur, date, notes, created_at, updated_at "
+        "FROM transactions"
+    ).fetchall()
+    prices = conn.execute(
+        "SELECT asset_id, date, price, currency, price_eur FROM prices"
+    ).fetchall()
+    balance_entries = conn.execute(
+        "SELECT id, asset_id, date, type, amount_eur, notes, created_at FROM balance_entries"
+    ).fetchall()
+
+    conn.execute("DROP TABLE IF EXISTS balance_entries")
+    conn.execute("DROP TABLE IF EXISTS prices")
+    conn.execute("DROP TABLE IF EXISTS transactions")
+    conn.execute("DROP TABLE IF EXISTS assets")
+
+    conn.execute("""
+        CREATE TABLE assets (
+            id           INTEGER PRIMARY KEY,
+            name         VARCHAR NOT NULL,
+            ticker       VARCHAR NOT NULL UNIQUE,
+            type         VARCHAR NOT NULL CHECK (type IN ('etf', 'stock', 'fund', 'balance')),
+            currency     VARCHAR NOT NULL DEFAULT 'EUR',
+            market_id    INTEGER REFERENCES markets(id),
+            image_url    VARCHAR,
+            manual_price BOOLEAN NOT NULL DEFAULT false,
+            isin         VARCHAR,
+            created_at   TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    for row in assets:
+        conn.execute("INSERT INTO assets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", list(row))
+
+    conn.execute("""
+        CREATE TABLE transactions (
+            id                  INTEGER PRIMARY KEY,
+            asset_id            INTEGER NOT NULL REFERENCES assets(id),
+            type                VARCHAR NOT NULL CHECK (type IN ('buy', 'sell')),
+            broker              VARCHAR NOT NULL CHECK (broker IN ('openbank', 'trade_republic', 'revolut', 'degiro')),
+            shares              DECIMAL(18,8) NOT NULL,
+            price               DECIMAL(18,6) NOT NULL,
+            price_eur           DECIMAL(18,6) NOT NULL,
+            currency            VARCHAR(3) NOT NULL DEFAULT 'EUR',
+            commission          DECIMAL(10,4) NOT NULL DEFAULT 0,
+            commission_currency VARCHAR(3),
+            commission_eur      DECIMAL(10,4) NOT NULL DEFAULT 0,
+            date                DATE NOT NULL,
+            notes               VARCHAR,
+            created_at          TIMESTAMP DEFAULT current_timestamp,
+            updated_at          TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    for row in transactions:
+        conn.execute(
+            "INSERT INTO transactions (id, asset_id, type, broker, shares, price, price_eur, currency, "
+            "commission, commission_currency, commission_eur, date, notes, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            list(row),
+        )
+
+    conn.execute("""
+        CREATE TABLE prices (
+            asset_id  INTEGER NOT NULL REFERENCES assets(id),
+            date      DATE NOT NULL,
+            price     DECIMAL(18,6) NOT NULL,
+            currency  VARCHAR(3) NOT NULL,
+            price_eur DECIMAL(18,6) NOT NULL,
+            PRIMARY KEY (asset_id, date)
+        )
+    """)
+    for row in prices:
+        conn.execute("INSERT INTO prices VALUES (?, ?, ?, ?, ?)", list(row))
+
+    conn.execute("""
+        CREATE TABLE balance_entries (
+            id         INTEGER PRIMARY KEY,
+            asset_id   INTEGER NOT NULL REFERENCES assets(id),
+            date       DATE NOT NULL,
+            type       VARCHAR NOT NULL CHECK (type IN ('deposit', 'withdrawal', 'snapshot')),
+            amount_eur DECIMAL(18,2) NOT NULL,
+            notes      VARCHAR,
+            created_at TIMESTAMP DEFAULT current_timestamp
+        )
+    """)
+    for row in balance_entries:
+        conn.execute("INSERT INTO balance_entries VALUES (?, ?, ?, ?, ?, ?, ?)", list(row))
+
+    logger.info("Migration complete: %d assets, %d transactions, %d prices, %d balance_entries restored",
+                len(assets), len(transactions), len(prices), len(balance_entries))
+
+
 def _apply_schema(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("""
         CREATE TABLE IF NOT EXISTS markets (
@@ -140,21 +242,20 @@ def _apply_schema(conn: duckdb.DuckDBPyConnection) -> None:
     if not has_isin:
         conn.execute("ALTER TABLE assets ADD COLUMN isin VARCHAR")
 
-    # Migration: add 'balance' to allowed asset types
-    # Retype the column to drop the old inline CHECK, then add the expanded one
+    # Migration: add 'balance' to the allowed asset types CHECK constraint.
+    # DuckDB does not support ALTER TABLE DROP/ADD CONSTRAINT on existing tables,
+    # so the only approach is to recreate the table and all FK-dependent children.
     has_balance_type = conn.execute("""
-        SELECT COUNT(*) FROM duckdb_constraints()
-        WHERE table_name = 'assets' AND constraint_type = 'CHECK' AND constraint_text ILIKE '%balance%'
+        SELECT COUNT(*) FROM information_schema.check_constraints cc
+        JOIN information_schema.table_constraints tc
+          ON tc.constraint_name = cc.constraint_name
+         AND tc.table_schema    = cc.constraint_schema
+        WHERE tc.table_name = 'assets'
+          AND tc.constraint_type = 'CHECK'
+          AND cc.check_clause ILIKE '%balance%'
     """).fetchone()[0]
     if not has_balance_type:
-        try:
-            conn.execute("ALTER TABLE assets ALTER COLUMN type TYPE VARCHAR")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE assets ADD CHECK (type IN ('etf', 'stock', 'fund', 'balance'))")
-        except Exception:
-            pass
+        _migrate_assets_add_balance(conn)
 
     conn.execute("""
         CREATE SEQUENCE IF NOT EXISTS assets_id_seq START 1
