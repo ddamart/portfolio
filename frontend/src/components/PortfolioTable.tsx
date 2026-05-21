@@ -166,21 +166,9 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
     }),
     col.accessor('pnl_eur', {
       header: 'G/P',
-      sortingFn: (a, b) => {
-        const va = hasPeriod ? (a.original.period_gain_eur ?? -Infinity) : (a.original.pnl_eur ?? -Infinity)
-        const vb = hasPeriod ? (b.original.period_gain_eur ?? -Infinity) : (b.original.pnl_eur ?? -Infinity)
-        return va - vb
-      },
+      sortingFn: (a, b) => (a.original.pnl_eur ?? -Infinity) - (b.original.pnl_eur ?? -Infinity),
       cell: info => {
         const row = info.row.original
-        if (hasPeriod) {
-          if (row.period_gain_eur == null) return <span className="text-gray-400">—</span>
-          return (
-            <div className={`font-medium ${pnlClass(row.period_gain_eur)}`}>
-              {formatEur(row.period_gain_eur)}
-            </div>
-          )
-        }
         const eur = info.getValue()
         const isEur = row.currency === 'EUR'
         const pnlNative = row.current_price != null
@@ -201,17 +189,9 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
     }),
     col.accessor('gain_pct', {
       header: 'G/P %',
-      sortingFn: (a, b) => {
-        const va = hasPeriod ? (a.original.period_gain_pct ?? -Infinity) : (a.original.gain_pct ?? -Infinity)
-        const vb = hasPeriod ? (b.original.period_gain_pct ?? -Infinity) : (b.original.gain_pct ?? -Infinity)
-        return va - vb
-      },
+      sortingFn: (a, b) => (a.original.gain_pct ?? -Infinity) - (b.original.gain_pct ?? -Infinity),
       cell: info => {
         const row = info.row.original
-        if (hasPeriod) {
-          if (row.period_gain_pct == null) return <span className="text-gray-400">—</span>
-          return <span className={pnlClass(row.period_gain_pct)}>{formatPct(row.period_gain_pct)}</span>
-        }
         const pctEur = info.getValue()
         const isEur = row.currency === 'EUR'
         const pctNative = row.current_price != null && row.avg_buy_price > 0
