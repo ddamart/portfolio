@@ -31,39 +31,11 @@ function parseAmount(v: string): number {
   return parseFloat(s)
 }
 
-/** Parse a CSV/TSV text into import rows.
- *  Accepted column order: date, value[, type]
- *  Date formats handled: YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY
- *  Numeric separators: 1.234,56 (ES) and 1,234.56 (EN) both accepted.
- */
-function parseCsvText(raw: string): { date: string; amount_eur: number; type: string }[] {
-  const rows: { date: string; amount_eur: number; type: string }[] = []
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim()
-    if (!trimmed || trimmed.startsWith('#')) continue
-    // Split on comma or tab/semicolon
-    const sep = trimmed.includes('\t') ? '\t' : trimmed.includes(';') ? ';' : ','
-    const parts = trimmed.split(sep).map(p => p.trim().replace(/^"|"$/g, ''))
-    if (parts.length < 2) continue
-    const [dateRaw, valRaw, typeRaw = 'snapshot'] = parts
-    // Normalise ES number format: 1.234,56 → 1234.56
-    const normalised = valRaw.replace(/\./g, '').replace(',', '.')
-    const amount_eur = parseFloat(normalised)
-    if (!dateRaw || isNaN(amount_eur)) continue
-    const type = typeRaw.toLowerCase().trim()
-    rows.push({ date: dateRaw, amount_eur, type: ['deposit', 'withdrawal', 'snapshot'].includes(type) ? type : 'snapshot' })
-  }
-  return rows
-}
-
 export function BalanceDrawer({ asset, onClose }: Props) {
   const [entries, setEntries] = useState<BalanceEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [form, setForm] = useState({ type: 'snapshot', date: new Date().toISOString().slice(0, 10), amount: '', notes: '' })
   const [saving, setSaving] = useState(false)
-  const [showImport, setShowImport] = useState(false)
-  const [csvText, setCsvText] = useState('')
-  const [importing, setImporting] = useState(false)
 
   const load = () => {
     setLoading(true)
@@ -114,26 +86,6 @@ export function BalanceDrawer({ asset, onClose }: Props) {
       toast.error('Error al eliminar')
     }
   }
-
-  const handleImport = async () => {
-    const rows = parseCsvText(csvText)
-    if (rows.length === 0) { toast.error('No se encontraron filas válidas'); return }
-    setImporting(true)
-    try {
-      const result = await balanceApi.import(asset.id, rows)
-      toast.success(`${result.inserted} entradas importadas`)
-      if (result.errors.length > 0) toast.error(`${result.errors.length} filas con error`)
-      setCsvText('')
-      setShowImport(false)
-      load()
-    } catch {
-      toast.error('Error al importar')
-    } finally {
-      setImporting(false)
-    }
-  }
-
-  const importPreview = csvText.trim() ? parseCsvText(csvText) : []
 
   const inputCls = 'w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500'
 
@@ -216,47 +168,6 @@ export function BalanceDrawer({ asset, onClose }: Props) {
           >
             {saving ? 'Guardando...' : 'Añadir entrada'}
           </button>
-        </div>
-
-        {/* Bulk import */}
-        <div className="border-b border-gray-200 dark:border-gray-700">
-          <button
-            onClick={() => setShowImport(v => !v)}
-            className="w-full flex items-center justify-between px-5 py-3 text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
-          >
-            <span className="font-medium">Importar CSV histórico</span>
-            <span className="text-xs">{showImport ? '▲' : '▼'}</span>
-          </button>
-          {showImport && (
-            <div className="px-5 pb-4 space-y-3">
-              <p className="text-xs text-gray-400 leading-relaxed">
-                Columnas: <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">fecha,valor[,tipo]</code> —
-                tipo es <em>snapshot</em> por defecto.
-                Separadores: coma, punto y coma o tabulador.
-                Números en formato español (1.234,56) o inglés (1234.56).
-                La importación borra entradas existentes del mismo tipo antes de insertar.
-              </p>
-              <textarea
-                value={csvText}
-                onChange={e => setCsvText(e.target.value)}
-                placeholder={"2024-09-04,9655.00\n2024-09-05,9662.30\n04/09/2024,9655,snapshot"}
-                rows={6}
-                className="w-full font-mono text-xs border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
-              />
-              {importPreview.length > 0 && (
-                <p className="text-xs text-gray-400">
-                  {importPreview.length} filas detectadas — del {importPreview[0].date} al {importPreview[importPreview.length - 1].date}
-                </p>
-              )}
-              <button
-                onClick={handleImport}
-                disabled={importing || importPreview.length === 0}
-                className="w-full py-2 bg-purple-600 text-white text-sm font-medium rounded-lg hover:bg-purple-700 disabled:opacity-50 transition-colors"
-              >
-                {importing ? 'Importando...' : `Importar ${importPreview.length} filas`}
-              </button>
-            </div>
-          )}
         </div>
 
         {/* Entry list */}

@@ -46,3 +46,6 @@ Thumbs.db
 
 # Claude Code (local config only, not project settings)
 .claude/settings.local.json
+
+# Local data files used by import scripts
+scripts/*.json
