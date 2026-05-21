@@ -157,7 +157,7 @@ export function TransactionTable() {
         )
       },
     }),
-    col.display({
+    col.accessor(row => row.shares * row.price_eur, {
       id: 'cost',
       header: 'Coste',
       cell: info => {
