@@ -143,15 +143,15 @@ export function TransactionTable() {
       header: 'Participaciones',
       cell: info => formatNumber(info.getValue()),
     }),
-    col.accessor('price', {
+    col.accessor('price_eur', {
+      id: 'price',
       header: 'Precio',
-      sortingFn: (a, b) => a.original.price_eur - b.original.price_eur,
       cell: info => {
         const row = info.row.original
         const isEur = row.currency === 'EUR'
         return (
           <div>
-            <div>{formatNumber(info.getValue(), 4)} {row.currency}</div>
+            <div>{formatNumber(row.price, 4)} {row.currency}</div>
             {!isEur && <div className="text-xs text-gray-400">{formatEur(row.price_eur)}</div>}
           </div>
         )
@@ -187,17 +187,12 @@ export function TransactionTable() {
         )
       },
     }),
-    col.display({
+    col.accessor(row => {
+      const tradeEur = row.shares * row.price_eur
+      return tradeEur > 0 ? (row.commission_eur / tradeEur) * 100 : 0
+    }, {
       id: 'commission_pct',
       header: 'Com. %',
-      enableSorting: true,
-      sortingFn: (a, b) => {
-        const tradeA = a.original.shares * a.original.price_eur
-        const tradeB = b.original.shares * b.original.price_eur
-        const pctA = tradeA > 0 ? a.original.commission_eur / tradeA : 0
-        const pctB = tradeB > 0 ? b.original.commission_eur / tradeB : 0
-        return pctA - pctB
-      },
       cell: info => {
         const row = info.row.original
         const tradeEur = row.shares * row.price_eur
