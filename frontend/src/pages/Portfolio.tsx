@@ -15,6 +15,7 @@ const TYPE_OPTIONS = [
   { value: 'stock', label: 'Acciones' },
   { value: 'etf', label: 'ETF' },
   { value: 'fund', label: 'Fondos' },
+  { value: 'balance', label: 'Cartera' },
 ]
 
 function FilterPills<T extends string>({

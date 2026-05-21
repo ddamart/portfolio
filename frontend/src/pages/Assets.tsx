@@ -451,9 +451,10 @@ export function AssetsPage() {
 
   const typeBadge = (type: string) => {
     const cls: Record<string, string> = {
-      stock: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
-      etf:   'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300',
-      fund:  'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
+      stock:   'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
+      etf:     'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300',
+      fund:    'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
+      balance: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
     }
     return (
       <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cls[type] ?? ''}`}>
