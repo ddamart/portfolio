@@ -50,7 +50,7 @@ function FilterPills({
 }
 
 export function PortfolioPage() {
-  const [period, setPeriod] = useState('ytd')
+  const [period, setPeriod] = useState('1y')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [brokers, setBrokers] = useState<string[]>([])

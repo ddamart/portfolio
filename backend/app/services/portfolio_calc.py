@@ -182,7 +182,7 @@ def get_holdings(
 
     # Append balance-type asset rows (unless a non-balance asset_type filter is active)
     if not type_list or 'balance' in type_list:
-        balance_rows = _get_balance_holdings(conn, latest_date, broker=broker)
+        balance_rows = _get_balance_holdings(conn, latest_date, broker=broker, date_from=date_from)
         if balance_rows:
             tx_total = sum((h.value_eur or 0.0) for h in result)
             bal_total = sum((h.balance_value_eur or 0.0) for h in balance_rows)
@@ -206,6 +206,7 @@ def _get_balance_holdings(
     conn: duckdb.DuckDBPyConnection,
     latest_date: date,
     broker: Optional[str] = None,
+    date_from: Optional[date] = None,
 ) -> list[HoldingRow]:
     """Return HoldingRow entries for all balance-type assets."""
     # broker filter not applicable to balance assets (they have no broker), but we
@@ -237,6 +238,16 @@ def _get_balance_holdings(
     WHERE a.type = 'balance'
     """, [latest_date]).fetchall()
 
+    start_by_asset: dict[int, float] = {}
+    if date_from:
+        start_rows = conn.execute("""
+            SELECT DISTINCT ON (asset_id) asset_id, amount_eur
+            FROM balance_entries
+            WHERE type = 'snapshot' AND date >= ?
+            ORDER BY asset_id, date ASC
+        """, [date_from]).fetchall()
+        start_by_asset = {int(r[0]): float(r[1]) for r in start_rows}
+
     result = []
     for row in rows:
         asset_id = int(row[0])
@@ -251,6 +262,10 @@ def _get_balance_holdings(
 
         pnl_eur = value_eur - contrib_eur
         gain_pct = (pnl_eur / contrib_eur * 100) if contrib_eur > 0 else None
+
+        period_start = start_by_asset.get(asset_id)
+        period_gain = (value_eur - period_start) if period_start is not None else None
+        period_pct = (period_gain / period_start * 100) if period_start is not None and period_start > 0 else None
 
         result.append(
             HoldingRow(
@@ -277,6 +292,9 @@ def _get_balance_holdings(
                 balance_value_eur=value_eur,
                 balance_contributions_eur=contrib_eur,
                 balance_last_snapshot_date=str(snap_date) if snap_date is not None else None,
+                period_start_value_eur=period_start,
+                period_gain_eur=period_gain,
+                period_gain_pct=period_pct,
             )
         )
     return result
@@ -287,6 +305,7 @@ def get_value_at_date(
     target_date: date,
     broker: Optional[str] = None,
     asset_type: Optional[str] = None,
+    bal_direction: str = 'before',
 ) -> float:
     """Portfolio market value as of target_date using the last price on or before that date."""
     asset_type_filter = ""
@@ -341,13 +360,19 @@ def get_value_at_date(
     if not type_list or 'balance' in type_list:
         # broker filter skips balance assets (they have no broker)
         if not broker_list:
-            bal_row = conn.execute("""
+            if bal_direction == 'after':
+                snap_where = "AND date >= ?"
+                snap_order = "ASC"
+            else:
+                snap_where = "AND date <= ?"
+                snap_order = "DESC"
+            bal_row = conn.execute(f"""
                 SELECT COALESCE(SUM(be.amount_eur), 0)
                 FROM (
                     SELECT DISTINCT ON (asset_id) asset_id, amount_eur
                     FROM balance_entries
-                    WHERE type = 'snapshot' AND date <= ?
-                    ORDER BY asset_id, date DESC
+                    WHERE type = 'snapshot' {snap_where}
+                    ORDER BY asset_id, date {snap_order}
                 ) be
                 JOIN assets a ON a.id = be.asset_id
                 WHERE a.type = 'balance'
@@ -594,7 +619,7 @@ def get_modified_dietz(
     R% = (V_fin − V_ini − ΣCF) / (V_ini + Σ(CF_i × W_i))
     Gain€ = V_fin − V_ini − ΣCF  (pure market contribution, net of capital movements)
     """
-    V_ini = get_value_at_date(conn, date_from, broker=broker, asset_type=asset_type)
+    V_ini = get_value_at_date(conn, date_from, broker=broker, asset_type=asset_type, bal_direction='after')
     V_fin = current_value
     D = max((date_to - date_from).days, 1)  # avoid /0 on same-day periods
 
@@ -663,6 +688,24 @@ def get_summary(
     if broker_list:
         broker_filter = _in_clause("t.broker", broker_list, summary_params)
 
+    # Resolve period mode and date range before building SQL
+    if period == "all":
+        is_period = False
+    elif period and period != "custom":
+        # Named period (ytd, 1m, …) — resolve dates if not already provided
+        is_period = True
+        if not date_from:
+            date_from, date_to = _period_to_date_range(period)
+    else:
+        # custom period string or no period at all — active only when date_from is explicit
+        is_period = date_from is not None
+
+    effective_date_to = date_to or date.today()
+
+    # Add date_to filter to the holdings CTE so only transactions up to that date count
+    date_to_filter = "AND t.date <= ?"
+    summary_params.append(effective_date_to)
+
     row = conn.execute(f"""
     WITH holdings AS (
         SELECT
@@ -672,7 +715,7 @@ def get_summary(
                 NULLIF(SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE 0.0 END), 0) AS avg_buy_price_eur
         FROM transactions t
         {asset_join}
-        WHERE 1=1 {type_filter} {broker_filter}
+        WHERE 1=1 {type_filter} {broker_filter} {date_to_filter}
         GROUP BY t.asset_id
         HAVING SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE -t.shares::DOUBLE END) > 0.000001
     ),
@@ -696,33 +739,19 @@ def get_summary(
     FROM joined
     """, summary_params).fetchone()
 
-    # Resolve period mode and date range
-    if period == "all":
-        is_period = False
-    elif period and period != "custom":
-        # Named period (ytd, 1m, …) — resolve dates if not already provided
-        is_period = True
-        if not date_from:
-            date_from, date_to = _period_to_date_range(period)
-    else:
-        # custom period string or no period at all — active only when date_from is explicit
-        is_period = date_from is not None
-
     # Realized P&L: period-filtered when period mode is active
     if is_period and date_from:
         realized = get_realized_pnl(conn, date_from=date_from, date_to=date_to, broker=broker, asset_type=asset_type)
     else:
         realized = get_realized_pnl(conn, broker=broker, asset_type=asset_type)
 
-    # Fetch balance asset totals (value via get_value_at_date, contributions via SQL)
+    # Fetch balance asset totals — all use effective_date_to
     balance_value = 0.0
     balance_contrib = 0.0
     balance_gross_deposits = 0.0
     balance_gross_withdrawals = 0.0
     if (not type_list or 'balance' in type_list) and not broker_list:
-        today = date.today()
-        balance_value = 0.0
-        # latest snapshot sum for balance assets
+        # latest snapshot sum for balance assets up to effective_date_to
         bv_row = conn.execute("""
             SELECT COALESCE(SUM(be.amount_eur), 0)
             FROM (
@@ -733,7 +762,7 @@ def get_summary(
             ) be
             JOIN assets a ON a.id = be.asset_id
             WHERE a.type = 'balance'
-        """, [today]).fetchone()
+        """, [effective_date_to]).fetchone()
         balance_value = float(bv_row[0]) if bv_row and bv_row[0] is not None else 0.0
 
         bc_row = conn.execute("""
@@ -744,7 +773,8 @@ def get_summary(
             FROM balance_entries be
             JOIN assets a ON a.id = be.asset_id
             WHERE a.type = 'balance' AND be.type IN ('deposit', 'withdrawal')
-        """).fetchone()
+            AND be.date <= ?
+        """, [effective_date_to]).fetchone()
         if bc_row:
             balance_contrib = float(bc_row[0]) if bc_row[0] is not None else 0.0
             balance_gross_deposits = float(bc_row[1]) if bc_row[1] is not None else 0.0
@@ -785,9 +815,8 @@ def get_summary(
     period_return_eur: Optional[float] = None
     period_return_pct: Optional[float] = None
     if is_period and date_from:
-        effective_date_to = date_to or date.today()
         # When the period ends in the past, V_fin must be the historical value at
-        # date_to, not today's portfolio value (which inflates the return figure).
+        # effective_date_to, not today's portfolio value (which inflates the return figure).
         if effective_date_to < date.today():
             v_fin = get_value_at_date(conn, effective_date_to, broker=broker, asset_type=asset_type)
         else:

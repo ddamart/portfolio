@@ -6,7 +6,6 @@ const PERIODS = [
   { label: 'YTD', value: 'ytd' },
   { label: '1A', value: '1y' },
   { label: '5A', value: '5y' },
-  { label: 'Todo', value: 'all' },
 ]
 
 interface Props {
@@ -76,7 +75,7 @@ export function PeriodFilter({ value, onChange, dateFrom = '', dateTo = '', onDa
           />
           {isCustom && (
             <button
-              onClick={() => { onDateRange('', ''); onChange('all') }}
+              onClick={() => { onDateRange('', ''); onChange('1y') }}
               className="ml-1 text-sm text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
               title="Limpiar rango"
             >

@@ -48,7 +48,7 @@ export function PortfolioSummaryCard({ period, dateFrom, dateTo, broker, assetTy
   }
 
   const hasPeriod = summary.period_return_eur !== null
-  const hasRealized = summary.realized_pnl_eur !== 0 || summary.total_invested_ever_eur > 0
+  const hasRealized = summary.total_invested_eur > 0 || summary.realized_pnl_eur !== 0
   const periodLabel = PERIOD_LABELS[period] ?? 'Período'
 
   return (
@@ -89,9 +89,8 @@ export function PortfolioSummaryCard({ period, dateFrom, dateTo, broker, assetTy
       {hasRealized && (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <StatCard
-            label="Total invertido (histórico)"
-            value={formatEur(summary.total_invested_ever_eur)}
-            sub="Incluyendo posiciones cerradas"
+            label="Total invertido"
+            value={formatEur(summary.total_invested_eur)}
             compact
           />
           <StatCard

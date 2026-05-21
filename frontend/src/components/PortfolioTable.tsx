@@ -341,7 +341,14 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
                 <p className="font-medium text-gray-900 dark:text-white text-sm">{h.name}</p>
                 <p className="text-xs font-mono text-gray-400">{h.ticker}</p>
               </div>
+              <div className="text-right w-28">
+                <p className="text-xs text-gray-400">Inicio</p>
+                <p className="text-sm text-gray-700 dark:text-gray-300">
+                  {h.period_start_value_eur != null ? formatEur(h.period_start_value_eur) : '—'}
+                </p>
+              </div>
               <div className="text-right">
+                <p className="text-xs text-gray-400">Fin</p>
                 <p className="text-sm font-medium text-gray-900 dark:text-white">
                   {h.balance_value_eur != null ? formatEur(h.balance_value_eur) : '—'}
                 </p>
@@ -350,13 +357,12 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
                 )}
               </div>
               <div className="text-right w-28">
-                <p className="text-xs text-gray-400">Aportado</p>
-                <p className="text-sm text-gray-700 dark:text-gray-300">
-                  {h.balance_contributions_eur != null ? formatEur(h.balance_contributions_eur) : '—'}
-                </p>
-              </div>
-              <div className="text-right w-28">
-                {h.pnl_eur != null ? (
+                {h.period_gain_eur != null ? (
+                  <>
+                    <p className={`text-sm font-medium ${pnlClass(h.period_gain_eur)}`}>{formatEur(h.period_gain_eur)}</p>
+                    {h.period_gain_pct != null && <p className={`text-xs ${pnlClass(h.period_gain_pct)}`}>{formatPct(h.period_gain_pct)}</p>}
+                  </>
+                ) : h.pnl_eur != null ? (
                   <>
                     <p className={`text-sm font-medium ${pnlClass(h.pnl_eur)}`}>{formatEur(h.pnl_eur)}</p>
                     {h.gain_pct != null && <p className={`text-xs ${pnlClass(h.gain_pct)}`}>{formatPct(h.gain_pct)}</p>}
