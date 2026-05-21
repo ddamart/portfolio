@@ -357,3 +357,61 @@ class TestOpenFigiExchangePreference:
             ticker, asset_type = _openfigi_resolve("FR0013227113")
         assert ticker is None
         assert asset_type is None
+
+
+class TestBalanceAssetDeleteAndClear:
+    def _create_balance_asset(self, client, ticker="CARTBAL"):
+        r = client.post("/api/assets", json={
+            "name": "Cartera Test", "ticker": ticker,
+            "type": "balance", "currency": "EUR", "manual_price": True,
+        })
+        assert r.status_code == 201, r.text
+        return r.json()
+
+    def _add_entry(self, client, asset_id, etype, amount, date="2024-01-15"):
+        r = client.post(f"/api/balance/{asset_id}", json={
+            "date": date, "type": etype, "amount_eur": amount,
+        })
+        assert r.status_code == 201, r.text
+        return r.json()
+
+    def test_clear_balance_entries_deletes_all_entries(self, client):
+        asset = self._create_balance_asset(client)
+        self._add_entry(client, asset["id"], "snapshot", 10000)
+        self._add_entry(client, asset["id"], "deposit", 5000)
+        self._add_entry(client, asset["id"], "withdrawal", 1000)
+
+        r = client.delete(f"/api/assets/{asset['id']}/prices")
+        assert r.status_code == 204
+
+        entries = client.get(f"/api/balance/{asset['id']}").json()
+        assert entries == []
+
+    def test_clear_balance_leaves_asset_intact(self, client):
+        asset = self._create_balance_asset(client)
+        self._add_entry(client, asset["id"], "snapshot", 5000)
+
+        client.delete(f"/api/assets/{asset['id']}/prices")
+
+        assets = client.get("/api/assets").json()
+        assert any(a["id"] == asset["id"] for a in assets)
+
+    def test_delete_balance_asset_with_entries_succeeds(self, client):
+        asset = self._create_balance_asset(client)
+        self._add_entry(client, asset["id"], "snapshot", 10000)
+        self._add_entry(client, asset["id"], "deposit", 5000)
+
+        r = client.delete(f"/api/assets/{asset['id']}")
+        assert r.status_code == 204
+
+        assets = client.get("/api/assets").json()
+        assert not any(a["id"] == asset["id"] for a in assets)
+
+    def test_delete_balance_asset_removes_entries_too(self, client):
+        asset = self._create_balance_asset(client)
+        self._add_entry(client, asset["id"], "deposit", 3000)
+
+        client.delete(f"/api/assets/{asset['id']}")
+
+        r = client.get(f"/api/balance/{asset['id']}")
+        assert r.status_code == 404

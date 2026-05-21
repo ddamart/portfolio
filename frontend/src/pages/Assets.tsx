@@ -412,18 +412,25 @@ export function AssetsPage() {
   }
 
   const handleClearPrices = async (asset: Asset) => {
-    if (!confirm(`¿Borrar todo el historial de precios de "${asset.ticker}"?`)) return
+    const isBalance = asset.type === 'balance'
+    const confirmMsg = isBalance
+      ? `¿Borrar todas las entradas (valoraciones, aportaciones, retiradas) de "${asset.ticker}"?`
+      : `¿Borrar todo el historial de precios de "${asset.ticker}"?`
+    if (!confirm(confirmMsg)) return
     setClearingPricesId(asset.id)
     try {
       await assetsApi.clearPrices(asset.id)
-      if (!asset.manual_price) {
+      if (isBalance) {
+        toast.success(`Entradas de ${asset.ticker} borradas`)
+        load()
+      } else if (!asset.manual_price) {
         await pricesApi.refreshAsset(asset.id)
         toast.success(`Precios de ${asset.ticker} borrados y recargados`)
       } else {
         toast.success(`Historial de precios de ${asset.ticker} borrado`)
       }
     } catch {
-      toast.error('Error al borrar los precios')
+      toast.error(isBalance ? 'Error al borrar las entradas' : 'Error al borrar los precios')
     } finally {
       setClearingPricesId(null)
     }
@@ -561,7 +568,7 @@ export function AssetsPage() {
                         disabled={clearingPricesId === asset.id}
                         className="text-xs text-gray-400 hover:text-red-500 disabled:opacity-40 whitespace-nowrap text-left"
                       >
-                        {clearingPricesId === asset.id ? '…' : 'Borrar precios'}
+                        {clearingPricesId === asset.id ? '…' : asset.type === 'balance' ? 'Borrar entradas' : 'Borrar precios'}
                       </button>
                     </div>
                   </td>

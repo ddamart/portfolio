@@ -137,22 +137,30 @@ def asset_price_history(asset_id: int, period: str = "1y"):
 
 @router.delete("/{asset_id}/prices", status_code=204)
 def clear_asset_prices(asset_id: int):
-    """Delete all price history for an asset so it can be re-fetched from scratch."""
+    """Delete all price history (or balance entries) for an asset so it can be re-entered from scratch."""
     conn = get_db()
-    if not conn.execute("SELECT id FROM assets WHERE id = ?", [asset_id]).fetchone():
+    row = conn.execute("SELECT type FROM assets WHERE id = ?", [asset_id]).fetchone()
+    if not row:
         raise HTTPException(status_code=404, detail="Asset not found")
-    conn.execute("DELETE FROM prices WHERE asset_id = ?", [asset_id])
+    if row[0] == "balance":
+        conn.execute("DELETE FROM balance_entries WHERE asset_id = ?", [asset_id])
+    else:
+        conn.execute("DELETE FROM prices WHERE asset_id = ?", [asset_id])
 
 
 @router.delete("/{asset_id}", status_code=204)
 def delete_asset(asset_id: int):
     conn = get_db()
-    if not conn.execute("SELECT id FROM assets WHERE id = ?", [asset_id]).fetchone():
+    row = conn.execute("SELECT type FROM assets WHERE id = ?", [asset_id]).fetchone()
+    if not row:
         raise HTTPException(status_code=404, detail="Asset not found")
-    has_tx = conn.execute("SELECT COUNT(*) FROM transactions WHERE asset_id = ?", [asset_id]).fetchone()[0]
-    if has_tx:
-        raise HTTPException(status_code=409, detail=f"Cannot delete: asset has {has_tx} transaction(s)")
-    conn.execute("DELETE FROM prices WHERE asset_id = ?", [asset_id])
+    if row[0] == "balance":
+        conn.execute("DELETE FROM balance_entries WHERE asset_id = ?", [asset_id])
+    else:
+        has_tx = conn.execute("SELECT COUNT(*) FROM transactions WHERE asset_id = ?", [asset_id]).fetchone()[0]
+        if has_tx:
+            raise HTTPException(status_code=409, detail=f"Cannot delete: asset has {has_tx} transaction(s)")
+        conn.execute("DELETE FROM prices WHERE asset_id = ?", [asset_id])
     conn.execute("DELETE FROM assets WHERE id = ?", [asset_id])
 
 
