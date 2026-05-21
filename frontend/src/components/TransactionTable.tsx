@@ -24,23 +24,26 @@ const BROKER_LABELS: Record<string, string> = {
 
 const BROKERS = Object.keys(BROKER_LABELS) as (keyof typeof BROKER_LABELS)[]
 
-function FilterPills<T extends string>({
-  label, options, value, onChange,
+function FilterPills({
+  label, options, values, onChange,
 }: {
   label: string
-  options: { value: T; label: string }[]
-  value: T | 'all'
-  onChange: (v: T | 'all') => void
+  options: { value: string; label: string }[]
+  values: string[]
+  onChange: (vs: string[]) => void
 }) {
+  const toggle = (v: string) =>
+    onChange(values.includes(v) ? values.filter(x => x !== v) : [...values, v])
+
   return (
     <div className="flex items-center gap-1.5">
       <span className="text-xs text-gray-400 dark:text-gray-500 whitespace-nowrap">{label}:</span>
       {options.map(opt => (
         <button
           key={opt.value}
-          onClick={() => onChange(value === opt.value ? 'all' : opt.value)}
+          onClick={() => toggle(opt.value)}
           className={`text-xs px-2.5 py-1 rounded-full border font-medium transition-colors whitespace-nowrap ${
-            value === opt.value
+            values.includes(opt.value)
               ? 'bg-blue-600 border-blue-600 text-white'
               : 'border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400 hover:border-gray-400 dark:hover:border-gray-500'
           }`}
@@ -64,9 +67,9 @@ export function TransactionTable() {
   const [editTx, setEditTx] = useState<Transaction | null>(null)
   const [showAdd, setShowAdd] = useState(false)
   const [deletingId, setDeletingId] = useState<number | null>(null)
-  const [filterType, setFilterType]     = useState<'stock' | 'etf' | 'fund' | 'all'>('all')
-  const [filterOp, setFilterOp]         = useState<'buy' | 'sell' | 'all'>('all')
-  const [filterBroker, setFilterBroker] = useState<string>('all')
+  const [filterTypes, setFilterTypes]   = useState<string[]>([])
+  const [filterOps, setFilterOps]       = useState<string[]>([])
+  const [filterBrokers, setFilterBrokers] = useState<string[]>([])
 
   const load = useCallback(() => {
     setLoading(true)
@@ -236,11 +239,11 @@ export function TransactionTable() {
 
   const filtered = useMemo(
     () => transactions.filter(t =>
-      (filterType   === 'all' || t.asset_type === filterType) &&
-      (filterOp     === 'all' || t.type       === filterOp) &&
-      (filterBroker === 'all' || t.broker     === filterBroker)
+      (filterTypes.length === 0   || filterTypes.includes(t.asset_type)) &&
+      (filterOps.length === 0     || filterOps.includes(t.type)) &&
+      (filterBrokers.length === 0 || filterBrokers.includes(t.broker))
     ),
-    [transactions, filterType, filterOp, filterBroker]
+    [transactions, filterTypes, filterOps, filterBrokers]
   )
 
   const table = useReactTable({
@@ -276,8 +279,8 @@ export function TransactionTable() {
       <div className="flex flex-wrap items-center gap-4 px-4 py-2.5 border-b border-gray-100 dark:border-gray-700">
         <FilterPills
           label="Tipo"
-          value={filterType}
-          onChange={setFilterType}
+          values={filterTypes}
+          onChange={setFilterTypes}
           options={[
             { value: 'stock', label: 'Acciones' },
             { value: 'etf',   label: 'ETF' },
@@ -286,8 +289,8 @@ export function TransactionTable() {
         />
         <FilterPills
           label="Operación"
-          value={filterOp}
-          onChange={setFilterOp}
+          values={filterOps}
+          onChange={setFilterOps}
           options={[
             { value: 'buy',  label: 'Compra' },
             { value: 'sell', label: 'Venta' },
@@ -295,13 +298,13 @@ export function TransactionTable() {
         />
         <FilterPills
           label="Broker"
-          value={filterBroker}
-          onChange={setFilterBroker}
+          values={filterBrokers}
+          onChange={setFilterBrokers}
           options={activeBrokers.map(b => ({ value: b, label: BROKER_LABELS[b] ?? b }))}
         />
-        {(filterType !== 'all' || filterOp !== 'all' || filterBroker !== 'all') && (
+        {(filterTypes.length > 0 || filterOps.length > 0 || filterBrokers.length > 0) && (
           <button
-            onClick={() => { setFilterType('all'); setFilterOp('all'); setFilterBroker('all') }}
+            onClick={() => { setFilterTypes([]); setFilterOps([]); setFilterBrokers([]) }}
             className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 underline ml-auto"
           >
             Limpiar filtros

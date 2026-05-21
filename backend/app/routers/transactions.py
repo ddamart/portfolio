@@ -55,11 +55,17 @@ def list_transactions(
         filters.append("t.date <= ?")
         params.append(date_to)
     if broker:
-        filters.append("t.broker = ?")
-        params.append(broker)
+        broker_list = [b.strip() for b in broker.split(',') if b.strip()]
+        if broker_list:
+            placeholders = ','.join('?' * len(broker_list))
+            filters.append(f"t.broker IN ({placeholders})")
+            params.extend(broker_list)
     if asset_type:
-        filters.append("a.type = ?")
-        params.append(asset_type)
+        type_list = [t.strip() for t in asset_type.split(',') if t.strip()]
+        if type_list:
+            placeholders = ','.join('?' * len(type_list))
+            filters.append(f"a.type IN ({placeholders})")
+            params.extend(type_list)
     if asset_id:
         filters.append("t.asset_id = ?")
         params.append(asset_id)

@@ -11,6 +11,22 @@ import duckdb
 from app.models.portfolio import ChartPoint, HoldingRow, PortfolioSummary
 
 
+def _parse_filter_list(value: Optional[str]) -> list[str]:
+    """Split a comma-separated filter string into a non-empty list, or [] if None/empty."""
+    if not value:
+        return []
+    return [v.strip() for v in value.split(',') if v.strip()]
+
+
+def _in_clause(column: str, values: list[str], params: list) -> str:
+    """Append values to params and return 'AND column IN (?, ...)' or '' if no values."""
+    if not values:
+        return ""
+    placeholders = ','.join('?' * len(values))
+    params.extend(values)
+    return f"AND {column} IN ({placeholders})"
+
+
 def _period_to_date_range(period: str) -> tuple[Optional[date], Optional[date]]:
     today = date.today()
     mapping = {
@@ -49,17 +65,13 @@ def get_holdings(
         tx_date_filter = "AND t.date <= ?"
         params.append(date_to)
 
-    broker_filter = ""
-    if broker:
-        broker_filter = "AND t.broker = ?"
-        params.append(broker)
+    broker_list = _parse_filter_list(broker)
+    broker_filter = _in_clause("t.broker", broker_list, params)
 
     params.append(latest_date)  # for latest_prices WHERE date <= ?
 
-    type_filter = ""
-    if asset_type:
-        type_filter = "AND a.type = ?"
-        params.append(asset_type)
+    type_list = _parse_filter_list(asset_type)
+    type_filter = _in_clause("a.type", type_list, params)
 
     query = f"""
     WITH holdings AS (
@@ -169,22 +181,20 @@ def get_holdings(
         result = [h.model_copy(update=period_data.get(h.asset_id, {})) for h in result]
 
     # Append balance-type asset rows (unless a non-balance asset_type filter is active)
-    if asset_type is None or asset_type == "balance":
+    if not type_list or 'balance' in type_list:
         balance_rows = _get_balance_holdings(conn, latest_date, broker=broker)
         if balance_rows:
-            # Compute total value including balance assets for allocation_pct
             tx_total = sum((h.value_eur or 0.0) for h in result)
             bal_total = sum((h.balance_value_eur or 0.0) for h in balance_rows)
-            grand_total = tx_total + bal_total
-            if grand_total > 0:
-                # Re-compute allocation for tx-based holdings
+            # Allocation pools are separate: balance % among balance, stocks % among stocks
+            if tx_total > 0:
                 result = [
-                    h.model_copy(update={"allocation_pct": ((h.value_eur or 0.0) / grand_total * 100)})
+                    h.model_copy(update={"allocation_pct": ((h.value_eur or 0.0) / tx_total * 100)})
                     for h in result
                 ]
-                # Set allocation for balance rows
+            if bal_total > 0:
                 balance_rows = [
-                    h.model_copy(update={"allocation_pct": ((h.balance_value_eur or 0.0) / grand_total * 100)})
+                    h.model_copy(update={"allocation_pct": ((h.balance_value_eur or 0.0) / bal_total * 100)})
                     for h in balance_rows
                 ]
             result = result + balance_rows
@@ -283,20 +293,21 @@ def get_value_at_date(
     broker_filter = ""
     # Param order must match SQL placeholder order:
     #   1-2: SELECT CASE WHEN t.date <= ?
-    #   3-4: WHERE filters (asset_type?, broker?)  ← injected between SELECT and HAVING dates
-    #   5-6: HAVING CASE WHEN t.date <= ?
-    #   7:   price_asof WHERE date <= ?
+    #   3+:  WHERE filters (asset_type?, broker?) ← injected between SELECT and HAVING dates
+    #   N+1: HAVING CASE WHEN t.date <= ?
+    #   N+2: HAVING CASE WHEN t.date <= ?
+    #   N+3: price_asof WHERE date <= ?
     params: list = [target_date, target_date]
 
-    if asset_type:
-        asset_type_filter = "AND t.asset_id IN (SELECT id FROM assets WHERE type = ?)"
-        params.append(asset_type)
-    if broker:
-        broker_filter = "AND t.broker = ?"
-        params.append(broker)
+    type_list = _parse_filter_list(asset_type)
+    if type_list:
+        placeholders = ','.join('?' * len(type_list))
+        asset_type_filter = f"AND t.asset_id IN (SELECT id FROM assets WHERE type IN ({placeholders}))"
+        params.extend(type_list)
+    broker_list = _parse_filter_list(broker)
+    broker_filter = _in_clause("t.broker", broker_list, params)
 
-    params.extend([target_date, target_date])  # HAVING CASE WHEN dates
-    params.append(target_date)  # for price_asof WHERE date <= ?
+    params.extend([target_date, target_date, target_date])  # HAVING dates + price_asof
 
     query = f"""
     WITH holdings_at AS (
@@ -327,9 +338,9 @@ def get_value_at_date(
     tx_value = float(row[0]) if row and row[0] is not None else 0.0
 
     # Add balance asset snapshot values (unless filtering by a non-balance asset_type)
-    if asset_type is None or asset_type == "balance":
+    if not type_list or 'balance' in type_list:
         # broker filter skips balance assets (they have no broker)
-        if not broker:
+        if not broker_list:
             bal_row = conn.execute("""
                 SELECT COALESCE(SUM(be.amount_eur), 0)
                 FROM (
@@ -371,13 +382,13 @@ def get_realized_pnl(
     filters = ""
     params: list = []
 
-    if asset_type:
+    type_list = _parse_filter_list(asset_type)
+    broker_list = _parse_filter_list(broker)
+    if type_list:
         asset_join = "JOIN assets a ON a.id = t.asset_id"
-        filters += " AND a.type = ?"
-        params.append(asset_type)
-    if broker:
-        filters += " AND t.broker = ?"
-        params.append(broker)
+        filters += " " + _in_clause("a.type", type_list, params)
+    if broker_list:
+        filters += " " + _in_clause("t.broker", broker_list, params)
 
     rows = conn.execute(f"""
         SELECT t.asset_id, t.type, t.shares, t.price_eur, t.commission_eur, t.date
@@ -589,12 +600,14 @@ def get_modified_dietz(
 
     cf_filters = ""
     cf_params: list = [date_from, date_to]
-    if asset_type:
-        cf_filters += " AND asset_id IN (SELECT id FROM assets WHERE type = ?)"
-        cf_params.append(asset_type)
-    if broker:
-        cf_filters += " AND broker = ?"
-        cf_params.append(broker)
+    type_list = _parse_filter_list(asset_type)
+    broker_list = _parse_filter_list(broker)
+    if type_list:
+        placeholders = ','.join('?' * len(type_list))
+        cf_filters += f" AND asset_id IN (SELECT id FROM assets WHERE type IN ({placeholders}))"
+        cf_params.extend(type_list)
+    if broker_list:
+        cf_filters += " " + _in_clause("broker", broker_list, cf_params)
 
     rows = conn.execute(f"""
         SELECT type, shares::DOUBLE, price_eur::DOUBLE, commission_eur::DOUBLE, date
@@ -642,13 +655,13 @@ def get_summary(
     type_filter = ""
     summary_params: list = []
 
-    if asset_type:
+    type_list = _parse_filter_list(asset_type)
+    broker_list = _parse_filter_list(broker)
+    if type_list:
         asset_join = "JOIN assets a ON a.id = t.asset_id"
-        type_filter = "AND a.type = ?"
-        summary_params.append(asset_type)
-    if broker:
-        broker_filter = "AND t.broker = ?"
-        summary_params.append(broker)
+        type_filter = _in_clause("a.type", type_list, summary_params)
+    if broker_list:
+        broker_filter = _in_clause("t.broker", broker_list, summary_params)
 
     row = conn.execute(f"""
     WITH holdings AS (
@@ -704,7 +717,9 @@ def get_summary(
     # Fetch balance asset totals (value via get_value_at_date, contributions via SQL)
     balance_value = 0.0
     balance_contrib = 0.0
-    if (asset_type is None or asset_type == "balance") and not broker:
+    balance_gross_deposits = 0.0
+    balance_gross_withdrawals = 0.0
+    if (not type_list or 'balance' in type_list) and not broker_list:
         today = date.today()
         balance_value = 0.0
         # latest snapshot sum for balance assets
@@ -722,12 +737,30 @@ def get_summary(
         balance_value = float(bv_row[0]) if bv_row and bv_row[0] is not None else 0.0
 
         bc_row = conn.execute("""
-            SELECT COALESCE(SUM(CASE WHEN be.type='deposit' THEN be.amount_eur ELSE -be.amount_eur END), 0)
+            SELECT
+                COALESCE(SUM(CASE WHEN be.type='deposit' THEN be.amount_eur ELSE -be.amount_eur END), 0),
+                COALESCE(SUM(CASE WHEN be.type='deposit' THEN be.amount_eur ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN be.type='withdrawal' THEN be.amount_eur ELSE 0 END), 0)
             FROM balance_entries be
             JOIN assets a ON a.id = be.asset_id
             WHERE a.type = 'balance' AND be.type IN ('deposit', 'withdrawal')
         """).fetchone()
-        balance_contrib = float(bc_row[0]) if bc_row and bc_row[0] is not None else 0.0
+        if bc_row:
+            balance_contrib = float(bc_row[0]) if bc_row[0] is not None else 0.0
+            balance_gross_deposits = float(bc_row[1]) if bc_row[1] is not None else 0.0
+            balance_gross_withdrawals = float(bc_row[2]) if bc_row[2] is not None else 0.0
+
+    # Augment realized metrics with balance account data
+    if balance_gross_deposits > 0:
+        realized["total_invested_ever_eur"] += balance_gross_deposits
+    if balance_gross_withdrawals > 0:
+        # Proportional gain: realized gain = withdrawals × total_pnl / (snapshot + withdrawals)
+        balance_total_produced = balance_value + balance_gross_withdrawals
+        balance_total_pnl = balance_total_produced - balance_gross_deposits
+        if balance_total_produced > 0 and balance_total_pnl > 0:
+            balance_realized_gain = balance_gross_withdrawals * balance_total_pnl / balance_total_produced
+            realized["realized_pnl_eur"] += balance_realized_gain
+            realized["realized_pnl_net_eur"] += balance_realized_gain
 
     # fetchone() returns None if the inner query has zero rows (no prices loaded yet)
     if (row is None or row[0] is None) and balance_value == 0.0:
@@ -795,13 +828,13 @@ def _build_invested_step_series(
     filters = ""
     params: list = []
 
-    if asset_type:
+    type_list = _parse_filter_list(asset_type)
+    broker_list = _parse_filter_list(broker)
+    if type_list:
         asset_join = "JOIN assets a ON a.id = t.asset_id"
-        filters += " AND a.type = ?"
-        params.append(asset_type)
-    if broker:
-        filters += " AND t.broker = ?"
-        params.append(broker)
+        filters += " " + _in_clause("a.type", type_list, params)
+    if broker_list:
+        filters += " " + _in_clause("t.broker", broker_list, params)
 
     rows = conn.execute(f"""
         SELECT t.asset_id, t.type, t.shares, t.price_eur, t.date
@@ -864,27 +897,30 @@ def get_chart_data(
         params.append(date_to)
 
     # Build broker/asset_type filter fragments (same pattern as get_holdings)
+    type_list = _parse_filter_list(asset_type)
+    broker_list = _parse_filter_list(broker)
+
     asset_join = ""
     broker_filter = ""
     type_filter = ""
     extra_params: list = []
-
-    if asset_type:
+    # SQL inner query: WHERE 1=1 {broker_filter} {type_filter} — broker params must come first
+    if broker_list:
+        broker_filter = _in_clause("t2.broker", broker_list, extra_params)
+    if type_list:
         asset_join = "JOIN assets a ON a.id = t2.asset_id"
-        type_filter = "AND a.type = ?"
-        extra_params.append(asset_type)
-    if broker:
-        broker_filter = "AND t2.broker = ?"
-        extra_params.append(broker)
+        type_filter = _in_clause("a.type", type_list, extra_params)
 
     # Filters for the outer transactions join (use t alias)
-    outer_broker_filter = f"AND t.broker = ?" if broker else ""
-    outer_type_filter = f"AND t.asset_id IN (SELECT id FROM assets WHERE type = ?)" if asset_type else ""
+    outer_broker_filter = ""
+    outer_type_filter = ""
     outer_extra_params: list = []
-    if asset_type:
-        outer_extra_params.append(asset_type)
-    if broker:
-        outer_extra_params.append(broker)
+    if broker_list:
+        outer_broker_filter = _in_clause("t.broker", broker_list, outer_extra_params)
+    if type_list:
+        placeholders = ','.join('?' * len(type_list))
+        outer_type_filter = f"AND t.asset_id IN (SELECT id FROM assets WHERE type IN ({placeholders}))"
+        outer_extra_params.extend(type_list)
 
     all_params = params + extra_params + outer_extra_params
 
@@ -948,7 +984,7 @@ def get_chart_data(
 
     # Add balance asset values if not filtered to non-balance types (and no broker filter)
     balance_by_date: dict[date, tuple[float, float]] = {}  # date → (value_eur, net_contrib_eur)
-    if (asset_type is None or asset_type == "balance") and not broker:
+    if (not type_list or 'balance' in type_list) and not broker_list:
         balance_by_date = _build_balance_chart_series(conn, [row[0] for row in rows])
 
     chart = []
