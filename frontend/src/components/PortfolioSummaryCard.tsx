@@ -56,6 +56,24 @@ export function PortfolioSummaryCard({ period, dateFrom, dateTo, broker, assetTy
   const hasRealized = summary.total_invested_eur > 0 || summary.realized_pnl_eur !== 0
   const periodLabel = PERIOD_LABELS[period] ?? 'Período'
 
+  // G/P no realizada [período] = Dietz period gain − period realized P&L
+  const unrealizedPeriodEur = hasPeriod ? summary.period_return_eur! - summary.realized_pnl_eur : null
+  const unrealizedPeriodPct = (hasPeriod && summary.period_return_eur !== 0)
+    ? summary.period_return_pct! * unrealizedPeriodEur! / summary.period_return_eur!
+    : null
+
+  // Rendimiento Total = realized + unrealized (always the full picture):
+  //   with period  → Dietz period gain (= G/P no realizada + G/P realizada del período)
+  //   without period → all-time unrealized + all-time realized
+  const rendimientoTotalEur = hasPeriod
+    ? summary.period_return_eur!
+    : summary.total_pnl_eur + summary.realized_pnl_eur
+  const rendimientoTotalPct = hasPeriod
+    ? summary.period_return_pct!
+    : summary.total_invested_ever_eur > 0
+      ? (summary.total_pnl_eur + summary.realized_pnl_eur) / summary.total_invested_ever_eur * 100
+      : 0
+
   // ── Debug line builders (only populated when DEBUG_METRICS is true) ─────────
   const f = formatEur
   const p = formatPct
@@ -65,7 +83,7 @@ export function PortfolioSummaryCard({ period, dateFrom, dateTo, broker, assetTy
     `= ${f(summary.total_value_eur)}`,
     '',
     '· TX: shares × latest_price_eur',
-    '· + balance: latest snapshot ≤ date_to',
+    '· + balance: último snapshot ≤ date_to',
     summary.last_updated ? `· Precios al: ${summary.last_updated}` : '· Sin precios cargados',
   ] : undefined
 
@@ -74,7 +92,7 @@ export function PortfolioSummaryCard({ period, dateFrom, dateTo, broker, assetTy
     `= ${f(summary.period_start_value_eur!)}`,
     '',
     '· TX: shares@date_from × price@date_from',
-    '· + balance: primer snapshot ≥ date_from',
+    '· + balance: último snapshot ≤ date_from',
   ] : undefined
 
   const dbgInvertido = DEBUG_METRICS && !hasPeriod ? [
@@ -85,33 +103,26 @@ export function PortfolioSummaryCard({ period, dateFrom, dateTo, broker, assetTy
     '· + balance: Σdepósitos − Σretiradas ≤ date_to',
   ] : undefined
 
-  const impliedCF = hasPeriod
-    ? summary.total_value_eur - summary.period_start_value_eur! - summary.period_return_eur!
-    : 0
   const dbgRendPeriodo = DEBUG_METRICS && hasPeriod ? [
-    `Modified Dietz  [${periodLabel}]`,
-    `V_fin = ${f(summary.total_value_eur)}`,
-    `V_ini = ${f(summary.period_start_value_eur!)}`,
-    `ΣCF   = ${f(impliedCF)}`,
-    `  (buys + bal.dep − sells − bal.ret)`,
-    'Gain = V_fin − V_ini − ΣCF',
-    `     = ${f(summary.period_return_eur!)}`,
-    `R%   = ${p(summary.period_return_pct!)}`,
+    `G/P no realizada  [${periodLabel}]`,
+    `= Dietz − G/P realizada período`,
+    `= ${f(summary.period_return_eur!)} − ${f(summary.realized_pnl_eur)}`,
+    `= ${f(unrealizedPeriodEur!)}`,
+    unrealizedPeriodPct != null ? `R% = ${p(unrealizedPeriodPct)}` : '',
   ] : undefined
 
   const dbgGPTotal = DEBUG_METRICS ? [
-    'total_pnl_eur',
-    '= total_value − total_invested',
-    `= ${f(summary.total_value_eur)} − ${f(summary.total_invested_eur)}`,
-    `= ${f(summary.total_pnl_eur)}`,
-    `R% = ${p(summary.total_pnl_pct)}`,
-    '',
-    '· "Invertido" = TX cost basis',
-    '·   + balance net contrib hasta date_to',
+    hasPeriod ? `Rendimiento total  [${periodLabel}]` : 'Rendimiento total  (histórico)',
+    '= G/P no realizada + G/P realizada',
+    hasPeriod
+      ? `= ${f(unrealizedPeriodEur!)} + ${f(summary.realized_pnl_eur)}`
+      : `= ${f(summary.total_pnl_eur)} + ${f(summary.realized_pnl_eur)}`,
+    `= ${f(rendimientoTotalEur)}`,
+    `R% = ${p(rendimientoTotalPct)}`,
   ] : undefined
 
   const dbgGPSinPeriodo = DEBUG_METRICS && !hasPeriod ? [
-    'total_pnl_eur',
+    'total_pnl_eur  (G/P no realizada)',
     '= total_value − total_invested',
     `= ${f(summary.total_value_eur)} − ${f(summary.total_invested_eur)}`,
     `= ${f(summary.total_pnl_eur)}`,
@@ -127,7 +138,7 @@ export function PortfolioSummaryCard({ period, dateFrom, dateTo, broker, assetTy
   ] : undefined
 
   const dbgRealized = DEBUG_METRICS ? [
-    'AVCO — sells in window',
+    'AVCO — ventas en ventana',
     `Gross = ${f(summary.realized_pnl_eur)}  (${p(summary.realized_pnl_pct)})`,
     `Net   = ${f(summary.realized_pnl_net_eur)}  (${p(summary.realized_pnl_net_pct)})`,
     '',
@@ -160,15 +171,15 @@ export function PortfolioSummaryCard({ period, dateFrom, dateTo, broker, assetTy
         )}
         {hasPeriod ? (
           <StatCard
-            label={`Rendimiento ${periodLabel}`}
-            value={f(summary.period_return_eur!)}
-            sub={p(summary.period_return_pct!)}
-            valueClass={pnlClass(summary.period_return_eur!)}
+            label={`G/P no realizada ${periodLabel}`}
+            value={f(unrealizedPeriodEur!)}
+            sub={unrealizedPeriodPct != null ? p(unrealizedPeriodPct) : undefined}
+            valueClass={pnlClass(unrealizedPeriodEur!)}
             debugLines={dbgRendPeriodo}
           />
         ) : (
           <StatCard
-            label="Ganancia / Pérdida"
+            label="G/P no realizada"
             value={f(summary.total_pnl_eur)}
             sub={p(summary.total_pnl_pct)}
             valueClass={pnlClass(summary.total_pnl_eur)}
@@ -186,14 +197,14 @@ export function PortfolioSummaryCard({ period, dateFrom, dateTo, broker, assetTy
           />
           <StatCard
             label="Rendimiento total"
-            value={f(summary.total_pnl_eur)}
-            sub={p(summary.total_pnl_pct)}
-            valueClass={pnlClass(summary.total_pnl_eur)}
+            value={f(rendimientoTotalEur)}
+            sub={p(rendimientoTotalPct)}
+            valueClass={pnlClass(rendimientoTotalEur)}
             compact
             debugLines={dbgGPTotal}
           />
           <RealizedCard
-            label={hasPeriod ? `Ganancia realizada ${periodLabel}` : 'Ganancia realizada'}
+            label={hasPeriod ? `G/P realizada ${periodLabel}` : 'G/P realizada'}
             grossEur={summary.realized_pnl_eur}
             grossPct={summary.realized_pnl_pct}
             netEur={summary.realized_pnl_net_eur}
