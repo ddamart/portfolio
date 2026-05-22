@@ -99,6 +99,7 @@ export interface HoldingRow {
   balance_value_eur: number | null
   balance_contributions_eur: number | null
   balance_last_snapshot_date: string | null
+  period_net_flows_eur: number | null  // deposits − withdrawals within the period window
 }
 
 export interface PortfolioSummary {

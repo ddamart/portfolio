@@ -238,6 +238,7 @@ def _get_balance_holdings(
     WHERE a.type = 'balance'
     """, [latest_date]).fetchall()
 
+    # Period start snapshot per asset: earliest snapshot >= date_from
     start_by_asset: dict[int, float] = {}
     if date_from:
         start_rows = conn.execute("""
@@ -247,6 +248,26 @@ def _get_balance_holdings(
             ORDER BY asset_id, date ASC
         """, [date_from]).fetchall()
         start_by_asset = {int(r[0]): float(r[1]) for r in start_rows}
+
+    # Individual period flows per asset (date > date_from AND date <= latest_date)
+    # Used for Modified Dietz: need amounts and dates for time-weighting
+    D = max((latest_date - date_from).days, 1) if date_from else 1
+    period_flows_by_asset: dict[int, list[tuple[float, date]]] = {}
+    if date_from:
+        flow_rows = conn.execute("""
+            SELECT be.asset_id, be.type, be.amount_eur::DOUBLE, be.date
+            FROM balance_entries be
+            JOIN assets a ON a.id = be.asset_id
+            WHERE a.type = 'balance'
+              AND be.type IN ('deposit', 'withdrawal')
+              AND be.date > ? AND be.date <= ?
+            ORDER BY be.asset_id, be.date
+        """, [date_from, latest_date]).fetchall()
+        for r in flow_rows:
+            aid = int(r[0])
+            cf = float(r[2]) if r[1] == 'deposit' else -float(r[2])
+            cf_date = r[3] if isinstance(r[3], date) else r[3].date()
+            period_flows_by_asset.setdefault(aid, []).append((cf, cf_date))
 
     result = []
     for row in rows:
@@ -264,8 +285,23 @@ def _get_balance_holdings(
         gain_pct = (pnl_eur / contrib_eur * 100) if contrib_eur > 0 else None
 
         period_start = start_by_asset.get(asset_id)
-        period_gain = (value_eur - period_start) if period_start is not None else None
-        period_pct = (period_gain / period_start * 100) if period_start is not None and period_start > 0 else None
+        flows = period_flows_by_asset.get(asset_id, [])
+
+        # Net flows within the period window (shown in "Aportaciones netas" column)
+        period_net_flows = sum(cf for cf, _ in flows) if date_from else None
+
+        # Modified Dietz for the period
+        if period_start is not None:
+            weighted_cf = sum(
+                cf * (D - (cf_date - date_from).days) / D
+                for cf, cf_date in flows
+            ) if date_from else 0.0
+            period_gain = value_eur - period_start - (period_net_flows or 0.0)
+            denominator = period_start + weighted_cf
+            period_pct = (period_gain / denominator * 100) if abs(denominator) > 0.01 else None
+        else:
+            period_gain = None
+            period_pct = None
 
         result.append(
             HoldingRow(
@@ -295,6 +331,7 @@ def _get_balance_holdings(
                 period_start_value_eur=period_start,
                 period_gain_eur=period_gain,
                 period_gain_pct=period_pct,
+                period_net_flows_eur=period_net_flows,
             )
         )
     return result

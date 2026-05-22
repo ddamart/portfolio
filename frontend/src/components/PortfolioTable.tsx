@@ -341,12 +341,25 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
                 <p className="font-medium text-gray-900 dark:text-white text-sm">{h.name}</p>
                 <p className="text-xs font-mono text-gray-400">{h.ticker}</p>
               </div>
+              {/* Inicio */}
               <div className="text-right w-28">
                 <p className="text-xs text-gray-400">Inicio</p>
                 <p className="text-sm text-gray-700 dark:text-gray-300">
                   {h.period_start_value_eur != null ? formatEur(h.period_start_value_eur) : '—'}
                 </p>
               </div>
+              {/* Aportaciones netas en el período */}
+              <div className="text-right w-28">
+                <p className="text-xs text-gray-400">Apor. netas</p>
+                {h.period_net_flows_eur != null ? (
+                  <p className={`text-sm ${h.period_net_flows_eur >= 0 ? 'text-gray-700 dark:text-gray-300' : 'text-amber-500'}`}>
+                    {h.period_net_flows_eur >= 0 ? '+' : ''}{formatEur(h.period_net_flows_eur)}
+                  </p>
+                ) : (
+                  <p className="text-sm text-gray-400">—</p>
+                )}
+              </div>
+              {/* Fin */}
               <div className="text-right">
                 <p className="text-xs text-gray-400">Fin</p>
                 <p className="text-sm font-medium text-gray-900 dark:text-white">
@@ -356,6 +369,7 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
                   <p className="text-xs text-gray-400">{h.balance_last_snapshot_date}</p>
                 )}
               </div>
+              {/* G/P: Modified Dietz when period active, all-time otherwise */}
               <div className="text-right w-28">
                 {h.period_gain_eur != null ? (
                   <>

@@ -53,6 +53,7 @@ class HoldingRow(BaseModel):
     balance_value_eur: Optional[float] = None
     balance_contributions_eur: Optional[float] = None
     balance_last_snapshot_date: Optional[str] = None
+    period_net_flows_eur: Optional[float] = None  # deposits − withdrawals within the period window
 
 
 class ChartPoint(BaseModel):
