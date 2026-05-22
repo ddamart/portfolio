@@ -238,14 +238,16 @@ def _get_balance_holdings(
     WHERE a.type = 'balance'
     """, [latest_date]).fetchall()
 
-    # Period start snapshot per asset: earliest snapshot >= date_from
+    # Period start snapshot per asset: LAST snapshot <= date_from
+    # (portfolio value just before the period, 0 if account opened after date_from)
+    # Using <= avoids double-counting deposits that also created the opening snapshot.
     start_by_asset: dict[int, float] = {}
     if date_from:
         start_rows = conn.execute("""
             SELECT DISTINCT ON (asset_id) asset_id, amount_eur
             FROM balance_entries
-            WHERE type = 'snapshot' AND date >= ?
-            ORDER BY asset_id, date ASC
+            WHERE type = 'snapshot' AND date <= ?
+            ORDER BY asset_id, date DESC
         """, [date_from]).fetchall()
         start_by_asset = {int(r[0]): float(r[1]) for r in start_rows}
 
@@ -291,13 +293,15 @@ def _get_balance_holdings(
         period_net_flows = sum(cf for cf, _ in flows) if date_from else None
 
         # Modified Dietz for the period
-        if period_start is not None:
+        # V_ini = period_start (0 if account opened after date_from — no pre-period snapshot)
+        v_ini = period_start if period_start is not None else 0.0
+        if date_from and (period_start is not None or flows):
             weighted_cf = sum(
                 cf * (D - (cf_date - date_from).days) / D
                 for cf, cf_date in flows
-            ) if date_from else 0.0
-            period_gain = value_eur - period_start - (period_net_flows or 0.0)
-            denominator = period_start + weighted_cf
+            )
+            period_gain = value_eur - v_ini - (period_net_flows or 0.0)
+            denominator = v_ini + weighted_cf
             period_pct = (period_gain / denominator * 100) if abs(denominator) > 0.01 else None
         else:
             period_gain = None
@@ -328,7 +332,7 @@ def _get_balance_holdings(
                 balance_value_eur=value_eur,
                 balance_contributions_eur=contrib_eur,
                 balance_last_snapshot_date=str(snap_date) if snap_date is not None else None,
-                period_start_value_eur=period_start,
+                period_start_value_eur=v_ini if date_from and (period_start is not None or flows) else None,
                 period_gain_eur=period_gain,
                 period_gain_pct=period_pct,
                 period_net_flows_eur=period_net_flows,
@@ -658,7 +662,7 @@ def get_modified_dietz(
     R% = (V_fin − V_ini − ΣCF) / (V_ini + Σ(CF_i × W_i))
     Gain€ = V_fin − V_ini − ΣCF  (pure market contribution, net of capital movements)
     """
-    V_ini = get_value_at_date(conn, date_from, broker=broker, asset_type=asset_type, bal_direction='after')
+    V_ini = get_value_at_date(conn, date_from, broker=broker, asset_type=asset_type, bal_direction='before')
     V_fin = current_value
     D = max((date_to - date_from).days, 1)  # avoid /0 on same-day periods
 

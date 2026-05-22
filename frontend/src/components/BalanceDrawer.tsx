@@ -85,7 +85,7 @@ export function BalanceDrawer({ asset, onClose }: Props) {
 
   const handleAdd = async () => {
     const amount = parseAmount(form.amount)
-    if (!form.date || isNaN(amount) || amount <= 0) {
+    if (!form.date || isNaN(amount) || amount < 0 || (form.type !== 'snapshot' && amount === 0)) {
       toast.error('Fecha y cantidad requeridas')
       return
     }
