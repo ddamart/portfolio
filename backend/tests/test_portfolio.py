@@ -264,27 +264,26 @@ class TestModifiedDietz:
 class TestPeriodHoldingPct:
     """period_gain_pct must be simple ROI: gain_eur / period_invested, not Modified Dietz."""
 
-    def test_period_gain_pct_simple_roi(self, client):
-        """gain_pct = gain_eur / period_invested (not time-weighted)."""
+    def test_cambio_uses_price_difference_times_quantity(self, client):
+        """cambio_eur = total_shares × (price_date_to − price_date_from)."""
         asset = create_asset(client, ticker="SIMPLEROI", currency="EUR")
         # Existing holding before the YTD 2026 period
         create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR",
                    date="2025-12-31", broker="degiro")
-        seed_price(asset["id"], "2025-12-31", 100.0)   # V_ini = 1 000
-        # Large buy very late in the period (Modified Dietz would inflate %)
+        seed_price(asset["id"], "2025-12-31", 100.0)   # price_ini = 100
+        # Large buy very late in the period
         create_buy(client, asset["id"], shares=90, price=100.0, currency="EUR",
                    date="2026-05-10", broker="degiro")
         seed_price(asset["id"], "2026-05-10", 100.0)
-        seed_price(asset["id"], "2026-05-19", 110.0)   # 10 % price gain
+        seed_price(asset["id"], "2026-05-19", 110.0)   # price_fin = 110
 
         rows = client.get("/api/portfolio/holdings?period=ytd").json()
         row = next(r for r in rows if r["ticker"] == "SIMPLEROI")
 
-        # period_invested = 1 000 + 9 000 = 10 000
-        # gain_eur = 100 × 110 − 10 000 = 1 000
-        # simple ROI = 1 000 / 10 000 = 10 %
-        assert row["period_gain_eur"] == pytest.approx(1000.0, abs=5.0)
-        assert row["period_gain_pct"] == pytest.approx(10.0, abs=0.5)
+        # cambio_eur = 100 × (110 − 100) = 1 000
+        # cambio_pct = 1 000 / (100 × 100) × 100 = 10 %
+        assert row["cambio_eur"] == pytest.approx(1000.0, abs=5.0)
+        assert row["cambio_pct"] == pytest.approx(10.0, abs=0.5)
 
     def test_period_fields_absent_for_all(self, client):
         """When period='all' or not provided, period_return fields must be None."""
@@ -417,8 +416,8 @@ class TestCustomDateRange:
         )
         assert abs(data["period_return_pct"]) < 1.0
 
-    def test_period_gain_uses_historical_price_at_date_to(self, client):
-        """period_gain_eur on holdings must reflect price at date_to, not today."""
+    def test_cambio_uses_historical_price_at_date_to(self, client):
+        """cambio_eur on holdings must reflect price at date_to, not today."""
         asset = create_asset(client, ticker="HIST3", currency="EUR")
         create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR",
                    date="2024-12-31", broker="degiro")
@@ -428,8 +427,8 @@ class TestCustomDateRange:
 
         rows = client.get("/api/portfolio/holdings?date_from=2025-01-01&date_to=2025-03-01").json()
         row = next(r for r in rows if r["ticker"] == "HIST3")
-        # period_gain_eur = 10 × 120 − 10 × 100 = 200  (using March price, not June)
-        assert row["period_gain_eur"] == pytest.approx(200.0, abs=5.0)
+        # cambio_eur = 10 × (120 − 100) = 200  (using March price, not June)
+        assert row["cambio_eur"] == pytest.approx(200.0, abs=5.0)
 
 
 class TestBalanceSummaryMetrics:
@@ -497,3 +496,251 @@ class TestBalanceSummaryMetrics:
 
         data = client.get("/api/portfolio/summary").json()
         assert data["total_invested_ever_eur"] == pytest.approx(3500.0, abs=1.0)
+
+
+class TestCambioEur:
+    """cambio_eur = total_shares × (price_date_to − price_date_from)."""
+
+    def test_cambio_basic(self, client):
+        asset = create_asset(client, ticker="CMBTEST", currency="EUR")
+        create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR",
+                   date="2024-12-31", broker="degiro")
+        seed_price(asset["id"], "2024-12-31", 100.0)
+        seed_price(asset["id"], "2025-03-01", 130.0)
+
+        rows = client.get("/api/portfolio/holdings?date_from=2025-01-01&date_to=2025-03-01").json()
+        row = next(r for r in rows if r["ticker"] == "CMBTEST")
+        # cambio = 10 × (130 − 100) = 300
+        assert row["cambio_eur"] == pytest.approx(300.0, abs=1.0)
+        # cambio_pct = 300 / 1000 × 100 = 30 %
+        assert row["cambio_pct"] == pytest.approx(30.0, abs=0.5)
+
+    def test_cambio_zero_when_price_unchanged(self, client):
+        asset = create_asset(client, ticker="FLATPRICE", currency="EUR")
+        create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR",
+                   date="2024-12-31", broker="degiro")
+        seed_price(asset["id"], "2024-12-31", 100.0)
+        seed_price(asset["id"], "2025-06-01", 100.0)
+
+        rows = client.get("/api/portfolio/holdings?date_from=2025-01-01&date_to=2025-06-01").json()
+        row = next(r for r in rows if r["ticker"] == "FLATPRICE")
+        assert row["cambio_eur"] == pytest.approx(0.0, abs=1.0)
+
+    def test_cambio_negative_when_price_falls(self, client):
+        asset = create_asset(client, ticker="FALLING", currency="EUR")
+        create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR",
+                   date="2024-12-31", broker="degiro")
+        seed_price(asset["id"], "2024-12-31", 100.0)
+        seed_price(asset["id"], "2025-06-01", 80.0)
+
+        rows = client.get("/api/portfolio/holdings?date_from=2025-01-01&date_to=2025-06-01").json()
+        row = next(r for r in rows if r["ticker"] == "FALLING")
+        # cambio = 10 × (80 − 100) = −200
+        assert row["cambio_eur"] == pytest.approx(-200.0, abs=1.0)
+
+    def test_cambio_fallback_when_no_period_start_price(self, client):
+        """When asset has no price at date_from, avg_buy_price_eur is used as fallback."""
+        asset = create_asset(client, ticker="NEWASSET", currency="EUR")
+        # Bought during the period — no historical price at date_from
+        create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR",
+                   date="2025-03-01", broker="degiro")
+        seed_price(asset["id"], "2025-03-01", 100.0)
+        seed_price(asset["id"], "2025-06-01", 120.0)
+
+        rows = client.get("/api/portfolio/holdings?date_from=2025-01-01&date_to=2025-06-01").json()
+        row = next(r for r in rows if r["ticker"] == "NEWASSET")
+        # Fallback: price_ini = avg_buy_price = 100, so cambio = 10 × (120 - 100) = 200
+        assert row["cambio_eur"] == pytest.approx(200.0, abs=1.0)
+
+    def test_cambio_none_without_period(self, client):
+        """Without a date range, cambio_eur must be None."""
+        asset = create_asset(client, ticker="NOPERIOD", currency="EUR")
+        create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR",
+                   date="2024-01-02", broker="degiro")
+        seed_price(asset["id"], "2024-01-02", 110.0)
+
+        rows = client.get("/api/portfolio/holdings").json()
+        row = next(r for r in rows if r["ticker"] == "NOPERIOD")
+        assert row["cambio_eur"] is None
+
+
+class TestAllocationByInvested:
+    """allocation_pct must use cost basis (invested), not market value."""
+
+    def test_allocation_reflects_invested_not_value(self, client):
+        a1 = create_asset(client, ticker="A1", currency="EUR")
+        a2 = create_asset(client, ticker="A2", currency="EUR")
+        # Both invested €1000, but A1 has grown 2× and A2 is flat
+        create_buy(client, a1["id"], shares=10, price=100.0, currency="EUR",
+                   date="2024-01-02", broker="degiro")
+        create_buy(client, a2["id"], shares=10, price=100.0, currency="EUR",
+                   date="2024-01-02", broker="degiro")
+        seed_price(a1["id"], "2024-01-02", 200.0)  # A1 grew 2×
+        seed_price(a2["id"], "2024-01-02", 100.0)  # A2 flat
+
+        rows = client.get("/api/portfolio/holdings").json()
+        allocs = {r["ticker"]: r["allocation_pct"] for r in rows}
+        # Both invested €1000 out of €2000 total → 50% each (not 66% / 33% by value)
+        assert allocs["A1"] == pytest.approx(50.0, abs=1.0)
+        assert allocs["A2"] == pytest.approx(50.0, abs=1.0)
+        assert sum(allocs.values()) == pytest.approx(100.0, abs=0.5)
+
+
+class TestBalanceContributionDateFilter:
+    """balance_contributions_eur must be filtered to <= date_to (bug fix)."""
+
+    def _create_balance_asset(self, client, ticker="BFIXTEST"):
+        r = client.post("/api/assets", json={
+            "name": "Balance Fix Test", "ticker": ticker,
+            "type": "balance", "currency": "EUR", "manual_price": True,
+        })
+        assert r.status_code == 201, r.text
+        return r.json()
+
+    def _add_entry(self, client, asset_id, entry_type, amount, date):
+        r = client.post(f"/api/balance/{asset_id}", json={
+            "date": date, "type": entry_type, "amount_eur": amount,
+        })
+        assert r.status_code == 201, r.text
+
+    def test_contributions_filtered_by_date_to(self, client):
+        bal = self._create_balance_asset(client)
+        self._add_entry(client, bal["id"], "deposit", 1000.0, "2024-01-01")
+        self._add_entry(client, bal["id"], "deposit", 2000.0, "2025-01-01")  # after date_to
+        self._add_entry(client, bal["id"], "snapshot", 1100.0, "2024-06-01")
+
+        rows = client.get("/api/portfolio/holdings?date_to=2024-06-30").json()
+        bal_row = next((r for r in rows if r["ticker"] == "BFIXTEST"), None)
+        assert bal_row is not None
+        # Only first deposit <= 2024-06-30 should count
+        assert bal_row["balance_contributions_eur"] == pytest.approx(1000.0, abs=1.0)
+
+
+class TestBalanceInicio:
+    """balance_inicio_eur should use first snapshot >= date_from, fallback last <= date_from."""
+
+    def _create_balance_asset(self, client, ticker="BINICIO"):
+        r = client.post("/api/assets", json={
+            "name": "Balance Inicio Test", "ticker": ticker,
+            "type": "balance", "currency": "EUR", "manual_price": True,
+        })
+        assert r.status_code == 201, r.text
+        return r.json()
+
+    def _add_entry(self, client, asset_id, entry_type, amount, date):
+        r = client.post(f"/api/balance/{asset_id}", json={
+            "date": date, "type": entry_type, "amount_eur": amount,
+        })
+        assert r.status_code == 201, r.text
+
+    def test_inicio_uses_first_snapshot_gte_date_from(self, client):
+        bal = self._create_balance_asset(client)
+        self._add_entry(client, bal["id"], "snapshot", 800.0, "2025-01-05")   # first >= 2025-01-01
+        self._add_entry(client, bal["id"], "snapshot", 1200.0, "2025-06-01")  # fin
+
+        rows = client.get("/api/portfolio/holdings?date_from=2025-01-01&date_to=2025-06-01").json()
+        bal_row = next((r for r in rows if r["ticker"] == "BINICIO"), None)
+        assert bal_row is not None
+        assert bal_row["balance_inicio_eur"] == pytest.approx(800.0, abs=1.0)
+
+    def test_inicio_fallback_to_last_lte_date_from(self, client):
+        # Different ticker to avoid collision with previous test
+        r = client.post("/api/assets", json={
+            "name": "Balance Fallback Test", "ticker": "BFALLBACK",
+            "type": "balance", "currency": "EUR", "manual_price": True,
+        })
+        bal = r.json()
+        self._add_entry(client, bal["id"], "snapshot", 500.0, "2024-11-01")  # only before period
+        # date_to is BEFORE the snapshot at 2025-06-01 so no snapshot >= date_from up to date_to
+
+        # We need date_to=2024-12-31 so no snapshot >= date_from=2024-12-01 within that window
+        rows = client.get("/api/portfolio/holdings?date_from=2024-12-01&date_to=2024-12-31").json()
+        bal_row = next((r for r in rows if r["ticker"] == "BFALLBACK"), None)
+        assert bal_row is not None
+        # No snapshot >= 2024-12-01, fallback to last <= 2024-12-01 = 500 (at 2024-11-01)
+        assert bal_row["balance_inicio_eur"] == pytest.approx(500.0, abs=1.0)
+
+
+class TestRendimientoTotal:
+    """rendimiento_total_eur = total_pnl_eur + realized_pnl_all_time_eur."""
+
+    def test_rendimiento_total_unrealized_only(self, client):
+        asset = create_asset(client, ticker="REND1", currency="EUR")
+        create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR",
+                   date="2024-01-02", broker="degiro")
+        seed_price(asset["id"], "2024-01-02", 150.0)
+
+        data = client.get("/api/portfolio/summary").json()
+        # No sells: rendimiento_total = pnl = 10 × (150 − 100) = 500
+        assert data["rendimiento_total_eur"] == pytest.approx(500.0, abs=1.0)
+
+    def test_rendimiento_total_includes_realized(self, client):
+        asset = create_asset(client, ticker="REND2", currency="EUR")
+        create_buy(client, asset["id"], shares=20, price=100.0, currency="EUR",
+                   date="2024-01-02", broker="degiro")
+        seed_price(asset["id"], "2024-01-02", 100.0)
+        # Sell half at 150 → realized gain = 10 × 50 = 500
+        client.post("/api/transactions", json={
+            "asset_id": asset["id"], "type": "sell", "broker": "degiro",
+            "shares": 10, "price": 150.0, "currency": "EUR",
+            "commission": 0, "date": "2024-06-01",
+        })
+        seed_price(asset["id"], "2024-06-01", 150.0)  # unrealized = 10 × (150 − 100) = 500
+        seed_price(asset["id"], "2024-12-31", 150.0)
+
+        data = client.get("/api/portfolio/summary").json()
+        # rendimiento_total = unrealized(500) + all_time_realized(500) = 1000
+        assert data["rendimiento_total_eur"] == pytest.approx(1000.0, abs=5.0)
+
+
+class TestRealizedSalesEndpoint:
+    """GET /api/portfolio/realized-sales returns sells with AVCO P&L."""
+
+    def test_empty_no_sells(self, client):
+        asset = create_asset(client, ticker="NOSELL", currency="EUR")
+        create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR",
+                   date="2024-01-02", broker="degiro")
+        r = client.get("/api/portfolio/realized-sales")
+        assert r.status_code == 200
+        assert r.json() == []
+
+    def test_sell_appears_with_pnl(self, client):
+        asset = create_asset(client, ticker="RSSELL", currency="EUR")
+        create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR",
+                   date="2024-01-02", broker="degiro")
+        client.post("/api/transactions", json={
+            "asset_id": asset["id"], "type": "sell", "broker": "degiro",
+            "shares": 10, "price": 130.0, "currency": "EUR",
+            "commission": 0, "date": "2024-06-01",
+        })
+        r = client.get("/api/portfolio/realized-sales")
+        assert r.status_code == 200
+        sales = r.json()
+        assert len(sales) == 1
+        assert sales[0]["ticker"] == "RSSELL"
+        assert sales[0]["shares"] == pytest.approx(10.0)
+        assert sales[0]["cost_basis_eur"] == pytest.approx(100.0, abs=0.5)
+        assert sales[0]["realized_pnl_eur"] == pytest.approx(300.0, abs=1.0)  # 10×(130−100)
+        assert sales[0]["realized_pnl_pct"] == pytest.approx(30.0, abs=0.5)   # 300/1000×100
+
+    def test_period_filter_restricts_sells(self, client):
+        asset = create_asset(client, ticker="FILTRS", currency="EUR")
+        create_buy(client, asset["id"], shares=20, price=100.0, currency="EUR",
+                   date="2024-01-02", broker="degiro")
+        # Sell 1: January 2024
+        client.post("/api/transactions", json={
+            "asset_id": asset["id"], "type": "sell", "broker": "degiro",
+            "shares": 5, "price": 120.0, "currency": "EUR",
+            "commission": 0, "date": "2024-01-15",
+        })
+        # Sell 2: June 2024
+        client.post("/api/transactions", json={
+            "asset_id": asset["id"], "type": "sell", "broker": "degiro",
+            "shares": 5, "price": 140.0, "currency": "EUR",
+            "commission": 0, "date": "2024-06-01",
+        })
+        # Only June sell in window
+        r = client.get("/api/portfolio/realized-sales?date_from=2024-05-01&date_to=2024-12-31")
+        sales = r.json()
+        assert len(sales) == 1
+        assert sales[0]["realized_pnl_eur"] == pytest.approx(200.0, abs=1.0)  # 5×(140−100)

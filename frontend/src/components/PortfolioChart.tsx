@@ -7,6 +7,7 @@ import type { ChartPoint, Transaction } from '../api/client'
 import { portfolioApi, transactionsApi } from '../api/client'
 import { useRefresh } from '../contexts/RefreshContext'
 import { fmtAxisCcy, formatEur, formatNumber, formatPct } from '../utils/format'
+import { getPeriodParams } from '../utils/period'
 
 const INVESTED_COLOR = '#3b82f6'
 
@@ -36,9 +37,7 @@ export function PortfolioChart({ period, dateFrom, dateTo, onRangeSelect, broker
 
   useEffect(() => {
     setLoading(true)
-    const params: Record<string, string> = period === 'custom'
-      ? { ...(dateFrom && { date_from: dateFrom }), ...(dateTo && { date_to: dateTo }) }
-      : { period }
+    const params = getPeriodParams(period, dateFrom, dateTo)
     if (broker) params.broker = broker
     if (assetType) params.asset_type = assetType
     Promise.all([

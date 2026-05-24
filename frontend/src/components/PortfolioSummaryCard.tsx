@@ -3,16 +3,8 @@ import type { PortfolioSummary } from '../api/client'
 import { portfolioApi } from '../api/client'
 import { useRefresh } from '../contexts/RefreshContext'
 import { formatEur, formatPct, pnlClass } from '../utils/format'
-
-// ─── Debug mode ──────────────────────────────────────────────────────────────
-// Set to true to show calculation breakdown on hover over each metric card.
-const DEBUG_METRICS = true
-// ─────────────────────────────────────────────────────────────────────────────
-
-const PERIOD_LABELS: Record<string, string> = {
-  '1d': '1D', '1w': '1S', '1m': '1M', '6m': '6M',
-  'ytd': 'YTD', '1y': '1A', '5y': '5A', 'all': 'Total', 'custom': 'Período',
-}
+import { RealizedSalesModal } from './RealizedSalesModal'
+import { getPeriodParams } from '../utils/period'
 
 interface Props {
   period: string
@@ -24,12 +16,11 @@ interface Props {
 
 export function PortfolioSummaryCard({ period, dateFrom, dateTo, broker, assetType }: Props) {
   const [summary, setSummary] = useState<PortfolioSummary | null>(null)
+  const [showSalesModal, setShowSalesModal] = useState(false)
   const { lastRefreshAt } = useRefresh()
 
   useEffect(() => {
-    const params: Record<string, string> = period === 'custom'
-      ? { ...(dateFrom && { date_from: dateFrom }), ...(dateTo && { date_to: dateTo }) }
-      : { period }
+    const params = getPeriodParams(period, dateFrom, dateTo)
     if (broker) params.broker = broker
     if (assetType) params.asset_type = assetType
     portfolioApi.summary(params).then(setSummary).catch(() => {})
@@ -37,245 +28,129 @@ export function PortfolioSummaryCard({ period, dateFrom, dateTo, broker, assetTy
 
   if (!summary) {
     return (
-      <div className="space-y-3 animate-pulse">
-        <div className="grid grid-cols-3 gap-4">
-          {[1, 2, 3].map(i => (
-            <div key={i} className="h-24 bg-gray-100 dark:bg-gray-800 rounded-xl" />
-          ))}
-        </div>
-        <div className="grid grid-cols-3 gap-4">
-          {[1, 2, 3].map(i => (
-            <div key={i} className="h-20 bg-gray-100 dark:bg-gray-800 rounded-xl" />
-          ))}
-        </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 animate-pulse">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <div key={i} className="h-20 bg-gray-100 dark:bg-gray-800 rounded-xl" />
+        ))}
       </div>
     )
   }
 
-  const hasPeriod = summary.period_return_eur !== null
-  const hasRealized = summary.total_invested_eur > 0 || summary.realized_pnl_eur !== 0
-  const periodLabel = PERIOD_LABELS[period] ?? 'Período'
+  // ── G/P no realizada (period-scoped cambio sum) ───────────────────────────
+  const unrealizedEur = summary.unrealized_cambio_eur ?? summary.total_pnl_eur
+  const unrealizedPct = summary.unrealized_cambio_pct ?? summary.total_pnl_pct
 
-  // G/P no realizada [período] = Dietz period gain − period realized P&L
-  const unrealizedPeriodEur = hasPeriod ? summary.period_return_eur! - summary.realized_pnl_eur : null
-  const unrealizedPeriodPct = (hasPeriod && summary.period_return_eur !== 0)
-    ? summary.period_return_pct! * unrealizedPeriodEur! / summary.period_return_eur!
-    : null
+  // ── Rendimiento total (all-time unrealized + all-time realized) ───────────
+  const rendimientoEur = summary.rendimiento_total_eur ?? summary.total_pnl_eur
+  const rendimientoPct = summary.rendimiento_total_pct ?? summary.total_pnl_pct
 
-  // Rendimiento Total = realized + unrealized (always the full picture):
-  //   with period  → Dietz period gain (= G/P no realizada + G/P realizada del período)
-  //   without period → all-time unrealized + all-time realized
-  const rendimientoTotalEur = hasPeriod
-    ? summary.period_return_eur!
-    : summary.total_pnl_eur + summary.realized_pnl_eur
-  const rendimientoTotalPct = hasPeriod
-    ? summary.period_return_pct!
-    : summary.total_invested_ever_eur > 0
-      ? (summary.total_pnl_eur + summary.realized_pnl_eur) / summary.total_invested_ever_eur * 100
-      : 0
-
-  // ── Debug line builders (only populated when DEBUG_METRICS is true) ─────────
-  const f = formatEur
-  const p = formatPct
-
-  const dbgValorTotal = DEBUG_METRICS ? [
-    'total_value_eur',
-    `= ${f(summary.total_value_eur)}`,
-    '',
-    '· TX: shares × latest_price_eur',
-    '· + balance: último snapshot ≤ date_to',
-    summary.last_updated ? `· Precios al: ${summary.last_updated}` : '· Sin precios cargados',
-  ] : undefined
-
-  const dbgVIni = DEBUG_METRICS && hasPeriod ? [
-    'period_start_value_eur  (V_ini Dietz)',
-    `= ${f(summary.period_start_value_eur!)}`,
-    '',
-    '· TX: shares@date_from × price@date_from',
-    '· + balance: último snapshot ≤ date_from',
-  ] : undefined
-
-  const dbgInvertido = DEBUG_METRICS && !hasPeriod ? [
-    'total_invested_eur  (no hay período)',
-    `= ${f(summary.total_invested_eur)}`,
-    '',
-    '· TX: shares × avg_buy_price_eur',
-    '· + balance: Σdepósitos − Σretiradas ≤ date_to',
-  ] : undefined
-
-  const dbgRendPeriodo = DEBUG_METRICS && hasPeriod ? [
-    `G/P no realizada  [${periodLabel}]`,
-    `= Dietz − G/P realizada período`,
-    `= ${f(summary.period_return_eur!)} − ${f(summary.realized_pnl_eur)}`,
-    `= ${f(unrealizedPeriodEur!)}`,
-    unrealizedPeriodPct != null ? `R% = ${p(unrealizedPeriodPct)}` : '',
-  ] : undefined
-
-  const dbgGPTotal = DEBUG_METRICS ? [
-    hasPeriod ? `Rendimiento total  [${periodLabel}]` : 'Rendimiento total  (histórico)',
-    '= G/P no realizada + G/P realizada',
-    hasPeriod
-      ? `= ${f(unrealizedPeriodEur!)} + ${f(summary.realized_pnl_eur)}`
-      : `= ${f(summary.total_pnl_eur)} + ${f(summary.realized_pnl_eur)}`,
-    `= ${f(rendimientoTotalEur)}`,
-    `R% = ${p(rendimientoTotalPct)}`,
-  ] : undefined
-
-  const dbgGPSinPeriodo = DEBUG_METRICS && !hasPeriod ? [
-    'total_pnl_eur  (G/P no realizada)',
-    '= total_value − total_invested',
-    `= ${f(summary.total_value_eur)} − ${f(summary.total_invested_eur)}`,
-    `= ${f(summary.total_pnl_eur)}`,
-    `R% = ${p(summary.total_pnl_pct)}`,
-  ] : undefined
-
-  const dbgTotalInv = DEBUG_METRICS ? [
-    'total_invested_eur',
-    `= ${f(summary.total_invested_eur)}`,
-    '',
-    '· TX: Σ(shares × avg_buy_price_eur)',
-    '· + balance: Σdepósitos − Σretiradas ≤ date_to',
-  ] : undefined
-
-  const dbgRealized = DEBUG_METRICS ? [
-    'AVCO — ventas en ventana',
-    `Gross = ${f(summary.realized_pnl_eur)}  (${p(summary.realized_pnl_pct)})`,
-    `Net   = ${f(summary.realized_pnl_net_eur)}  (${p(summary.realized_pnl_net_pct)})`,
-    '',
-    `· Ever invested: ${f(summary.total_invested_ever_eur)}`,
-    '· Net = gross − comisiones compra/venta',
-    '· Balance no computa en realizada',
-  ] : undefined
+  // ── Cambio total (period G/P no realizada + period G/P realizada) ─────────
+  const cambioEur = summary.cambio_total_eur ?? rendimientoEur
+  const cambioPct = summary.cambio_total_pct ?? rendimientoPct
 
   return (
-    <div className="space-y-3">
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+    <>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        {/* Row 1 */}
         <StatCard
           label="Valor total"
-          value={f(summary.total_value_eur)}
+          value={formatEur(summary.total_value_eur)}
           sub={summary.last_updated ? `Actualizado: ${summary.last_updated}` : 'Sin precios'}
-          debugLines={dbgValorTotal}
         />
-        {hasPeriod ? (
-          <StatCard
-            label="Valor inicio período"
-            value={f(summary.period_start_value_eur!)}
-            debugLines={dbgVIni}
-          />
-        ) : (
-          <StatCard
-            label="Invertido (en cartera)"
-            value={f(summary.total_invested_eur)}
-            debugLines={dbgInvertido}
-          />
-        )}
-        {hasPeriod ? (
-          <StatCard
-            label={`G/P no realizada ${periodLabel}`}
-            value={f(unrealizedPeriodEur!)}
-            sub={unrealizedPeriodPct != null ? p(unrealizedPeriodPct) : undefined}
-            valueClass={pnlClass(unrealizedPeriodEur!)}
-            debugLines={dbgRendPeriodo}
-          />
-        ) : (
-          <StatCard
-            label="G/P no realizada"
-            value={f(summary.total_pnl_eur)}
-            sub={p(summary.total_pnl_pct)}
-            valueClass={pnlClass(summary.total_pnl_eur)}
-            debugLines={dbgGPSinPeriodo}
-          />
-        )}
+        <StatCard
+          label="G/P no realizada"
+          value={formatEur(unrealizedEur)}
+          sub={formatPct(unrealizedPct)}
+          valueClass={pnlClass(unrealizedEur)}
+          subClass={pnlClass(unrealizedEur)}
+        />
+
+        {/* Row 2 */}
+        <StatCard
+          label="Total invertido"
+          value={formatEur(summary.total_invested_eur)}
+        />
+        <ClickableCard
+          label="G/P realizada"
+          value={formatEur(summary.realized_pnl_eur)}
+          sub={formatPct(summary.realized_pnl_pct)}
+          valueClass={pnlClass(summary.realized_pnl_eur)}
+          subClass={pnlClass(summary.realized_pnl_eur)}
+          onClick={() => setShowSalesModal(true)}
+          hint="Ver detalle"
+        />
+
+        {/* Row 3 */}
+        <StatCard
+          label="Rendimiento total"
+          value={formatEur(rendimientoEur)}
+          sub={formatPct(rendimientoPct)}
+          valueClass={pnlClass(rendimientoEur)}
+          subClass={pnlClass(rendimientoEur)}
+        />
+        <StatCard
+          label="Cambio"
+          value={formatEur(cambioEur)}
+          sub={cambioPct != null ? formatPct(cambioPct) : undefined}
+          valueClass={pnlClass(cambioEur)}
+          subClass={pnlClass(cambioEur)}
+        />
       </div>
-      {hasRealized && (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <StatCard
-            label="Total invertido"
-            value={f(summary.total_invested_eur)}
-            compact
-            debugLines={dbgTotalInv}
-          />
-          <StatCard
-            label="Rendimiento total"
-            value={f(rendimientoTotalEur)}
-            sub={p(rendimientoTotalPct)}
-            valueClass={pnlClass(rendimientoTotalEur)}
-            compact
-            debugLines={dbgGPTotal}
-          />
-          <RealizedCard
-            label={hasPeriod ? `G/P realizada ${periodLabel}` : 'G/P realizada'}
-            grossEur={summary.realized_pnl_eur}
-            grossPct={summary.realized_pnl_pct}
-            netEur={summary.realized_pnl_net_eur}
-            netPct={summary.realized_pnl_net_pct}
-            debugLines={dbgRealized}
-          />
-        </div>
-      )}
-    </div>
-  )
-}
 
-// ── Tooltip ───────────────────────────────────────────────────────────────────
-
-function DebugTooltip({ lines }: { lines: string[] }) {
-  if (!DEBUG_METRICS) return null
-  return (
-    <div className="pointer-events-none absolute z-50 hidden group-hover:block bottom-full left-0 mb-1.5 min-w-[260px] bg-gray-950 border border-gray-700 text-gray-200 text-[11px] rounded-lg px-3 py-2.5 font-mono shadow-2xl">
-      {lines.map((line, i) =>
-        line === '' ? (
-          <div key={i} className="h-2" />
-        ) : (
-          <div key={i} className={`leading-[1.6] ${line.startsWith('·') ? 'text-gray-400' : ''}`}>
-            {line}
-          </div>
-        )
-      )}
-    </div>
+      <RealizedSalesModal
+        open={showSalesModal}
+        onClose={() => setShowSalesModal(false)}
+        period={period}
+        dateFrom={dateFrom}
+        dateTo={dateTo}
+        broker={broker}
+        assetType={assetType}
+      />
+    </>
   )
 }
 
 // ── StatCard ──────────────────────────────────────────────────────────────────
 
 function StatCard({
-  label, value, sub, valueClass = '', compact = false, debugLines,
+  label, value, sub, valueClass = '', subClass = '',
 }: {
-  label: string; value: string; sub?: string; valueClass?: string; compact?: boolean
-  debugLines?: string[]
+  label: string; value: string; sub?: string
+  valueClass?: string; subClass?: string
 }) {
   return (
-    <div className="relative group bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4">
+    <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4">
       <p className="text-xs text-gray-500 dark:text-gray-400 mb-1 uppercase tracking-wide">{label}</p>
-      <p className={`${compact ? 'text-xl' : 'text-2xl'} font-bold text-gray-900 dark:text-white ${valueClass}`}>{value}</p>
-      {sub && <p className={`text-sm mt-0.5 ${valueClass || 'text-gray-400'}`}>{sub}</p>}
-      {debugLines && <DebugTooltip lines={debugLines} />}
+      <p className={`text-xl font-bold text-gray-900 dark:text-white ${valueClass}`}>{value}</p>
+      {sub && <p className={`text-sm mt-0.5 ${subClass || 'text-gray-400'}`}>{sub}</p>}
     </div>
   )
 }
 
-// ── RealizedCard ──────────────────────────────────────────────────────────────
+// ── ClickableCard ─────────────────────────────────────────────────────────────
 
-function RealizedCard({
-  label, grossEur, grossPct, netEur, netPct, debugLines,
+function ClickableCard({
+  label, value, sub, valueClass = '', subClass = '', onClick, hint,
 }: {
-  label: string; grossEur: number; grossPct: number; netEur: number; netPct: number
-  debugLines?: string[]
+  label: string; value: string; sub?: string
+  valueClass?: string; subClass?: string
+  onClick: () => void; hint?: string
 }) {
-  const gc = pnlClass(grossEur)
-  const nc = pnlClass(netEur)
   return (
-    <div className="relative group bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4">
-      <p className="text-xs text-gray-500 dark:text-gray-400 mb-1 uppercase tracking-wide">{label}</p>
-      <div className="flex items-baseline gap-2">
-        <p className={`text-xl font-bold ${gc}`}>{formatEur(grossEur)}</p>
-        <p className={`text-sm ${gc}`}>{formatPct(grossPct)}</p>
+    <button
+      onClick={onClick}
+      className="text-left bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-4 hover:border-blue-400 dark:hover:border-blue-500 hover:shadow-sm transition-all group"
+    >
+      <div className="flex items-center justify-between mb-1">
+        <p className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide">{label}</p>
+        {hint && (
+          <span className="text-xs text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity">
+            {hint} →
+          </span>
+        )}
       </div>
-      <div className="flex items-baseline gap-2 mt-0.5">
-        <p className={`text-sm ${nc || 'text-gray-400 dark:text-gray-500'}`}>{formatEur(netEur)}</p>
-        <p className={`text-xs ${nc || 'text-gray-400 dark:text-gray-500'}`}>{formatPct(netPct)} · neta</p>
-      </div>
-      {debugLines && <DebugTooltip lines={debugLines} />}
-    </div>
+      <p className={`text-xl font-bold text-gray-900 dark:text-white ${valueClass}`}>{value}</p>
+      {sub && <p className={`text-sm mt-0.5 ${subClass || 'text-gray-400'}`}>{sub}</p>}
+    </button>
   )
 }

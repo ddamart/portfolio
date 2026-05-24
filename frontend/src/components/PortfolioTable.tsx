@@ -11,6 +11,7 @@ import type { Asset, HoldingRow } from '../api/client'
 import { portfolioApi } from '../api/client'
 import { useRefresh } from '../contexts/RefreshContext'
 import { formatEur, formatNumber, formatPct, pnlClass, pnlClassMuted } from '../utils/format'
+import { getPeriodParams } from '../utils/period'
 import { AssetLogo } from './AssetLogo'
 import { BalanceDrawer } from './BalanceDrawer'
 import { ManualPriceModal } from './ManualPriceModal'
@@ -48,9 +49,7 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
 
   const load = () => {
     setLoading(true)
-    const params: Record<string, string> = period === 'custom'
-      ? { ...(dateFrom && { date_from: dateFrom }), ...(dateTo && { date_to: dateTo }) }
-      : { period }
+    const params = getPeriodParams(period, dateFrom, dateTo)
     if (broker) params.broker = broker
     if (assetType) params.asset_type = assetType
     portfolioApi.holdings(params).then(d => {
@@ -166,21 +165,8 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
     }),
     col.accessor('pnl_eur', {
       header: 'G/P',
-      sortingFn: (a, b) => {
-        const va = hasPeriod ? (a.original.period_gain_eur ?? -Infinity) : (a.original.pnl_eur ?? -Infinity)
-        const vb = hasPeriod ? (b.original.period_gain_eur ?? -Infinity) : (b.original.pnl_eur ?? -Infinity)
-        return va - vb
-      },
       cell: info => {
         const row = info.row.original
-        if (hasPeriod) {
-          if (row.period_gain_eur == null) return <span className="text-gray-400">—</span>
-          return (
-            <div className={`font-medium ${pnlClass(row.period_gain_eur)}`}>
-              {formatEur(row.period_gain_eur)}
-            </div>
-          )
-        }
         const eur = info.getValue()
         const isEur = row.currency === 'EUR'
         const pnlNative = row.current_price != null
@@ -189,7 +175,10 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
         if (eur == null) return <span className="text-gray-400">—</span>
         return (
           <div>
-            <div className={pnlClass(eur)}>{formatEur(eur)}</div>
+            <div className={`font-medium ${pnlClass(eur)}`}>{formatEur(eur)}</div>
+            {row.gain_pct != null && (
+              <div className={`text-xs ${pnlClass(row.gain_pct)}`}>{formatPct(row.gain_pct)}</div>
+            )}
             {!isEur && pnlNative != null && (
               <div className={`text-xs ${pnlClassMuted(pnlNative)}`}>
                 {pnlNative >= 0 ? '+' : ''}{formatNumber(pnlNative, 2)} {row.currency}
@@ -199,32 +188,17 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
         )
       },
     }),
-    col.accessor('gain_pct', {
-      header: 'G/P %',
-      sortingFn: (a, b) => {
-        const va = hasPeriod ? (a.original.period_gain_pct ?? -Infinity) : (a.original.gain_pct ?? -Infinity)
-        const vb = hasPeriod ? (b.original.period_gain_pct ?? -Infinity) : (b.original.gain_pct ?? -Infinity)
-        return va - vb
-      },
+    col.display({
+      id: 'cambio',
+      header: 'Cambio',
       cell: info => {
         const row = info.row.original
-        if (hasPeriod) {
-          if (row.period_gain_pct == null) return <span className="text-gray-400">—</span>
-          return <span className={pnlClass(row.period_gain_pct)}>{formatPct(row.period_gain_pct)}</span>
-        }
-        const pctEur = info.getValue()
-        const isEur = row.currency === 'EUR'
-        const pctNative = row.current_price != null && row.avg_buy_price > 0
-          ? (row.current_price / row.avg_buy_price - 1) * 100
-          : null
-        if (pctEur == null) return <span className="text-gray-400">—</span>
+        if (row.cambio_eur == null) return <span className="text-gray-400">—</span>
         return (
           <div>
-            <div className={pnlClass(pctEur)}>{formatPct(pctEur)}</div>
-            {!isEur && pctNative != null && (
-              <div className={`text-xs ${pnlClassMuted(pctNative)}`} title="En moneda local (sin efecto divisa)">
-                {formatPct(pctNative)} {row.currency}
-              </div>
+            <div className={`font-medium ${pnlClass(row.cambio_eur)}`}>{formatEur(row.cambio_eur)}</div>
+            {row.cambio_pct != null && (
+              <div className={`text-xs ${pnlClass(row.cambio_pct)}`}>{formatPct(row.cambio_pct)}</div>
             )}
           </div>
         )
@@ -341,26 +315,22 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
                 <p className="font-medium text-gray-900 dark:text-white text-sm">{h.name}</p>
                 <p className="text-xs font-mono text-gray-400">{h.ticker}</p>
               </div>
-              {/* Inicio */}
+              {/* Inicio: first snapshot >= date_from (or last <= as fallback) */}
               <div className="text-right w-28">
                 <p className="text-xs text-gray-400">Inicio</p>
                 <p className="text-sm text-gray-700 dark:text-gray-300">
-                  {h.period_start_value_eur != null ? formatEur(h.period_start_value_eur) : '—'}
+                  {h.balance_inicio_eur != null ? formatEur(h.balance_inicio_eur) : '—'}
                 </p>
               </div>
-              {/* Aportaciones netas en el período */}
+              {/* Invertido: all-time net contributions <= date_to */}
               <div className="text-right w-28">
-                <p className="text-xs text-gray-400">Apor. netas</p>
-                {h.period_net_flows_eur != null ? (
-                  <p className={`text-sm ${h.period_net_flows_eur >= 0 ? 'text-gray-700 dark:text-gray-300' : 'text-amber-500'}`}>
-                    {h.period_net_flows_eur >= 0 ? '+' : ''}{formatEur(h.period_net_flows_eur)}
-                  </p>
-                ) : (
-                  <p className="text-sm text-gray-400">—</p>
-                )}
+                <p className="text-xs text-gray-400">Invertido</p>
+                <p className="text-sm text-gray-700 dark:text-gray-300">
+                  {h.balance_contributions_eur != null ? formatEur(h.balance_contributions_eur) : '—'}
+                </p>
               </div>
-              {/* Fin */}
-              <div className="text-right">
+              {/* Fin: last snapshot <= date_to */}
+              <div className="text-right w-28">
                 <p className="text-xs text-gray-400">Fin</p>
                 <p className="text-sm font-medium text-gray-900 dark:text-white">
                   {h.balance_value_eur != null ? formatEur(h.balance_value_eur) : '—'}
@@ -369,17 +339,23 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
                   <p className="text-xs text-gray-400">{h.balance_last_snapshot_date}</p>
                 )}
               </div>
-              {/* G/P: Modified Dietz when period active, all-time otherwise */}
+              {/* G/P all-time: Fin - Invertido */}
               <div className="text-right w-28">
+                <p className="text-xs text-gray-400">G/P</p>
+                {h.pnl_eur != null ? (
+                  <>
+                    <p className={`text-sm font-medium ${pnlClass(h.pnl_eur)}`}>{formatEur(h.pnl_eur)}</p>
+                    {h.gain_pct != null && <p className={`text-xs ${pnlClass(h.gain_pct)}`}>{formatPct(h.gain_pct)}</p>}
+                  </>
+                ) : <p className="text-sm text-gray-400">—</p>}
+              </div>
+              {/* Cambio (period): Fin - Inicio - period_flows */}
+              <div className="text-right w-28">
+                <p className="text-xs text-gray-400">Cambio</p>
                 {h.period_gain_eur != null ? (
                   <>
                     <p className={`text-sm font-medium ${pnlClass(h.period_gain_eur)}`}>{formatEur(h.period_gain_eur)}</p>
                     {h.period_gain_pct != null && <p className={`text-xs ${pnlClass(h.period_gain_pct)}`}>{formatPct(h.period_gain_pct)}</p>}
-                  </>
-                ) : h.pnl_eur != null ? (
-                  <>
-                    <p className={`text-sm font-medium ${pnlClass(h.pnl_eur)}`}>{formatEur(h.pnl_eur)}</p>
-                    {h.gain_pct != null && <p className={`text-xs ${pnlClass(h.gain_pct)}`}>{formatPct(h.gain_pct)}</p>}
                   </>
                 ) : <p className="text-sm text-gray-400">—</p>}
               </div>

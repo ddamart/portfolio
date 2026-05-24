@@ -84,22 +84,24 @@ export interface HoldingRow {
   current_price_eur: number | null
   value_eur: number | null
   value_ccy: number | null
-  pnl_eur: number | null
+  pnl_eur: number | null       // Unrealized G/P (all-time): value − invested
   pnl_ccy: number | null
-  gain_pct: number | null
+  gain_pct: number | null      // pnl_eur / invested × 100
   daily_change_pct: number | null
-  allocation_pct: number
-  // Period-specific performance (null when period='all')
-  period_start_value_eur: number | null  // V_ini: value before the period opens
-  period_invested_eur: number | null     // V_ini + buy_cost − sell_proceeds
-  period_avg_price_eur: number | null    // period_invested_eur / total_shares
-  period_gain_eur: number | null
-  period_gain_pct: number | null
+  allocation_pct: number       // invested / total_pool_invested × 100
+  // Period-specific fields (null when no period active)
+  period_start_value_eur: number | null  // balance assets: value at period start
+  period_gain_eur: number | null         // balance assets: Modified Dietz gain
+  period_gain_pct: number | null         // balance assets: Modified Dietz %
+  // Cambio: price-movement contribution of current position over the period
+  cambio_eur: number | null    // total_shares × (price_date_to − price_date_from)
+  cambio_pct: number | null    // cambio_eur / invested × 100
   // Balance asset fields (only populated when type='balance')
   balance_value_eur: number | null
-  balance_contributions_eur: number | null
+  balance_contributions_eur: number | null    // all-time net contributions ≤ date_to
+  balance_inicio_eur: number | null           // snapshot at period start
   balance_last_snapshot_date: string | null
-  period_net_flows_eur: number | null  // deposits − withdrawals within the period window
+  period_net_flows_eur: number | null         // deposits − withdrawals within period
 }
 
 export interface PortfolioSummary {
@@ -117,6 +119,36 @@ export interface PortfolioSummary {
   period_start_value_eur: number | null
   period_return_eur: number | null
   period_return_pct: number | null
+  // All-time realized (never period-scoped)
+  realized_pnl_all_time_eur?: number
+  realized_pnl_all_time_pct?: number
+  // Total commissions ever paid (buy + sell)
+  total_commissions_eur?: number
+  // All-time Modified Dietz (kept for backward compat)
+  total_return_eur?: number | null
+  total_return_pct?: number | null
+  // G/P no realizada: SUM(cambio_eur) for all holdings — period-scoped price movement
+  unrealized_cambio_eur?: number | null
+  unrealized_cambio_pct?: number | null
+  // Rendimiento total: all-time unrealized + all-time realized (ignores date_from)
+  rendimiento_total_eur?: number | null
+  rendimiento_total_pct?: number | null
+  // Cambio total: unrealized_cambio + realized_pnl (period) = total wealth change
+  cambio_total_eur?: number | null
+  cambio_total_pct?: number | null
+}
+
+export interface RealizedSale {
+  date: string
+  asset_name: string
+  ticker: string
+  asset_type: string
+  broker: string | null
+  shares: number
+  price_eur: number
+  cost_basis_eur: number
+  realized_pnl_eur: number
+  realized_pnl_pct: number
 }
 
 export interface ChartPoint {
@@ -197,6 +229,8 @@ export const portfolioApi = {
     api.get<HoldingRow[]>('/portfolio/holdings', { params }).then(r => r.data),
   chart: (params?: Record<string, string>) =>
     api.get<ChartPoint[]>('/portfolio/chart', { params }).then(r => r.data),
+  realizedSales: (params?: Record<string, string>) =>
+    api.get<RealizedSale[]>('/portfolio/realized-sales', { params }).then(r => r.data),
 }
 
 export const pricesApi = {
