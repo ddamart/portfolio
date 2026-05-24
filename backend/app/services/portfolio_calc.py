@@ -653,11 +653,16 @@ def _compute_period_holding_data(
         GROUP BY asset_id
     ),
     price_asof AS (
+        -- Forward ASOF: first available price ON OR AFTER date_from.
+        -- This aligns with the chart's first visible data point, so Cambio %
+        -- reflects exactly what the user sees on screen (no invisible pre-period price).
+        -- For normal trading days (price exists on date_from) the result is identical
+        -- to a backward ASOF; only differs when date_from falls on a weekend/holiday.
         SELECT DISTINCT ON (asset_id)
             asset_id, price_eur::DOUBLE AS price_eur
         FROM prices
-        WHERE date <= ?
-        ORDER BY asset_id, date DESC
+        WHERE date >= ?
+        ORDER BY asset_id, date ASC
     )
     SELECT h.asset_id, COALESCE(p.price_eur, 0.0) AS p_ini, h.q_ini
     FROM holdings_at_ini h
@@ -1123,9 +1128,10 @@ def get_summary(
             ORDER BY asset_id, date DESC
         ),
         price_initial AS (
+            -- Forward ASOF: first price on or after date_from (matches chart first point)
             SELECT DISTINCT ON (asset_id) asset_id, price_eur::DOUBLE AS p_ini
-            FROM prices WHERE date <= ?
-            ORDER BY asset_id, date DESC
+            FROM prices WHERE date >= ?
+            ORDER BY asset_id, date ASC
         ),
         avg_cost AS (
             SELECT t.asset_id,

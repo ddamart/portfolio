@@ -421,7 +421,7 @@ class TestCustomDateRange:
         asset = create_asset(client, ticker="HIST3", currency="EUR")
         create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR",
                    date="2024-12-31", broker="degiro")
-        seed_price(asset["id"], "2024-12-31", 100.0)
+        seed_price(asset["id"], "2025-01-01", 100.0)   # period-start price (forward ASOF)
         seed_price(asset["id"], "2025-03-01", 120.0)   # +20 % at date_to
         seed_price(asset["id"], "2025-06-01", 500.0)   # today
 
@@ -505,21 +505,21 @@ class TestCambioEur:
         asset = create_asset(client, ticker="CMBTEST", currency="EUR")
         create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR",
                    date="2024-12-31", broker="degiro")
-        seed_price(asset["id"], "2024-12-31", 100.0)
+        seed_price(asset["id"], "2025-01-01", 100.0)  # period-start price (forward ASOF)
         seed_price(asset["id"], "2025-03-01", 130.0)
 
         rows = client.get("/api/portfolio/holdings?date_from=2025-01-01&date_to=2025-03-01").json()
         row = next(r for r in rows if r["ticker"] == "CMBTEST")
         # cambio = 10 × (130 − 100) = 300
         assert row["cambio_eur"] == pytest.approx(300.0, abs=1.0)
-        # cambio_pct = 300 / 1000 × 100 = 30 %
+        # cambio_pct = 300 / (10×100_avg) × 100 = 30 %
         assert row["cambio_pct"] == pytest.approx(30.0, abs=0.5)
 
     def test_cambio_zero_when_price_unchanged(self, client):
         asset = create_asset(client, ticker="FLATPRICE", currency="EUR")
         create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR",
                    date="2024-12-31", broker="degiro")
-        seed_price(asset["id"], "2024-12-31", 100.0)
+        seed_price(asset["id"], "2025-01-01", 100.0)  # period-start price
         seed_price(asset["id"], "2025-06-01", 100.0)
 
         rows = client.get("/api/portfolio/holdings?date_from=2025-01-01&date_to=2025-06-01").json()
@@ -530,7 +530,7 @@ class TestCambioEur:
         asset = create_asset(client, ticker="FALLING", currency="EUR")
         create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR",
                    date="2024-12-31", broker="degiro")
-        seed_price(asset["id"], "2024-12-31", 100.0)
+        seed_price(asset["id"], "2025-01-01", 100.0)  # period-start price
         seed_price(asset["id"], "2025-06-01", 80.0)
 
         rows = client.get("/api/portfolio/holdings?date_from=2025-01-01&date_to=2025-06-01").json()
@@ -563,7 +563,7 @@ class TestCambioEur:
         asset = create_asset(client, ticker="MIXED", currency="EUR")
         create_buy(client, asset["id"], shares=50, price=10.0, currency="EUR",
                    date="2024-12-31", broker="degiro")
-        seed_price(asset["id"], "2024-12-31", 10.0)
+        seed_price(asset["id"], "2025-01-01", 10.0)  # period-start price (forward ASOF)
         create_buy(client, asset["id"], shares=50, price=12.0, currency="EUR",
                    date="2025-03-01", broker="degiro")
         seed_price(asset["id"], "2025-03-01", 12.0)
@@ -579,7 +579,7 @@ class TestCambioEur:
         asset = create_asset(client, ticker="PARTSELL", currency="EUR")
         create_buy(client, asset["id"], shares=100, price=10.0, currency="EUR",
                    date="2024-12-31", broker="degiro")
-        seed_price(asset["id"], "2024-12-31", 10.0)
+        seed_price(asset["id"], "2025-01-01", 10.0)  # period-start price (forward ASOF)
         # Sell 50 shares during period
         client.post("/api/transactions", json={
             "asset_id": asset["id"], "type": "sell", "broker": "degiro",
