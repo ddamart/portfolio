@@ -538,19 +538,61 @@ class TestCambioEur:
         # cambio = 10 × (80 − 100) = −200
         assert row["cambio_eur"] == pytest.approx(-200.0, abs=1.0)
 
-    def test_cambio_fallback_when_no_period_start_price(self, client):
-        """When asset has no price at date_from, avg_buy_price_eur is used as fallback."""
+    def test_cambio_ignores_price_before_ownership(self, client):
+        """
+        Bug regression: asset has a price record at date_from but user held 0 shares.
+        Cambio must use the buy price as reference, not the pre-ownership market price.
+        """
         asset = create_asset(client, ticker="NEWASSET", currency="EUR")
-        # Bought during the period — no historical price at date_from
-        create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR",
+        # There IS a price on date_from (€1) but the user doesn't own the asset yet
+        seed_price(asset["id"], "2026-01-01", 1.0)
+        # Bought during the period at €10
+        create_buy(client, asset["id"], shares=100, price=10.0, currency="EUR",
+                   date="2026-03-01", broker="degiro")
+        seed_price(asset["id"], "2026-03-01", 10.0)
+        seed_price(asset["id"], "2026-05-01", 15.0)
+
+        rows = client.get("/api/portfolio/holdings?date_from=2026-01-01&date_to=2026-05-01").json()
+        row = next(r for r in rows if r["ticker"] == "NEWASSET")
+        # Correct: 100 × (15 − 10) = 500  (reference = buy price €10)
+        # Bug would give: 100 × (15 − 1) = 1400 (reference = market price at date_from)
+        assert row["cambio_eur"] == pytest.approx(500.0, abs=1.0)
+
+    def test_cambio_mixed_pre_and_in_period(self, client):
+        """50 shares from before (P_ini=10) + 50 bought at €12 during period."""
+        asset = create_asset(client, ticker="MIXED", currency="EUR")
+        create_buy(client, asset["id"], shares=50, price=10.0, currency="EUR",
+                   date="2024-12-31", broker="degiro")
+        seed_price(asset["id"], "2024-12-31", 10.0)
+        create_buy(client, asset["id"], shares=50, price=12.0, currency="EUR",
                    date="2025-03-01", broker="degiro")
-        seed_price(asset["id"], "2025-03-01", 100.0)
-        seed_price(asset["id"], "2025-06-01", 120.0)
+        seed_price(asset["id"], "2025-03-01", 12.0)
+        seed_price(asset["id"], "2025-06-01", 15.0)
 
         rows = client.get("/api/portfolio/holdings?date_from=2025-01-01&date_to=2025-06-01").json()
-        row = next(r for r in rows if r["ticker"] == "NEWASSET")
-        # Fallback: price_ini = avg_buy_price = 100, so cambio = 10 × (120 - 100) = 200
-        assert row["cambio_eur"] == pytest.approx(200.0, abs=1.0)
+        row = next(r for r in rows if r["ticker"] == "MIXED")
+        # 50 × (15 − 10) + 50 × (15 − 12) = 250 + 150 = 400
+        assert row["cambio_eur"] == pytest.approx(400.0, abs=1.0)
+
+    def test_cambio_partial_sell_uses_pini_for_remaining(self, client):
+        """Sold some pre-period shares — current shares all from before, reference = P_ini."""
+        asset = create_asset(client, ticker="PARTSELL", currency="EUR")
+        create_buy(client, asset["id"], shares=100, price=10.0, currency="EUR",
+                   date="2024-12-31", broker="degiro")
+        seed_price(asset["id"], "2024-12-31", 10.0)
+        # Sell 50 shares during period
+        client.post("/api/transactions", json={
+            "asset_id": asset["id"], "type": "sell", "broker": "degiro",
+            "shares": 50, "price": 12.0, "currency": "EUR",
+            "commission": 0, "date": "2025-03-01",
+        })
+        seed_price(asset["id"], "2025-03-01", 12.0)
+        seed_price(asset["id"], "2025-06-01", 15.0)
+
+        rows = client.get("/api/portfolio/holdings?date_from=2025-01-01&date_to=2025-06-01").json()
+        row = next(r for r in rows if r["ticker"] == "PARTSELL")
+        # 50 remaining shares × (15 − 10) = 250  (realized gain on 50 sold is separate)
+        assert row["cambio_eur"] == pytest.approx(250.0, abs=1.0)
 
     def test_cambio_none_without_period(self, client):
         """Without a date range, cambio_eur must be None."""

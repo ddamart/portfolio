@@ -632,30 +632,60 @@ def _compute_period_holding_data(
     Returns dict mapping asset_id → partial HoldingRow field overrides:
       period_start_value_eur, cambio_eur, cambio_pct.
 
-    cambio_eur = total_shares × (price_date_to − price_date_from).
-    When there is no price at date_from (asset opened during period),
-    avg_buy_price_eur is used as the period-start price proxy.
+    cambio_eur measures price movement only on shares the user actually held,
+    using a period-aware reference price:
+      - Q_ini = 0  → reference = avg buy price of shares purchased during the period
+      - Q_now ≤ Q_ini → reference = Q_now × P_ini  (reduced position, all from before)
+      - Q_now > Q_ini → reference = Q_ini × P_ini + (Q_now − Q_ini) × period_avg_buy
+    This prevents showing gains from before the position was opened.
     """
-    # Price at date_from per asset (ASOF: last known price ≤ date_from)
+    # Q_ini (shares at date_from) + P_ini (price at date_from) per asset
     ini_rows = conn.execute("""
-    WITH price_asof AS (
+    WITH holdings_at_ini AS (
+        SELECT asset_id,
+               GREATEST(
+                   SUM(CASE WHEN type='buy'  AND date <= ? THEN  shares::DOUBLE
+                            WHEN type='sell' AND date <= ? THEN -shares::DOUBLE
+                            ELSE 0.0 END),
+                   0.0
+               ) AS q_ini
+        FROM transactions
+        GROUP BY asset_id
+    ),
+    price_asof AS (
         SELECT DISTINCT ON (asset_id)
-            asset_id,
-            price::DOUBLE     AS price,
-            price_eur::DOUBLE AS price_eur
+            asset_id, price_eur::DOUBLE AS price_eur
         FROM prices
         WHERE date <= ?
         ORDER BY asset_id, date DESC
     )
-    SELECT asset_id, price, price_eur
-    FROM price_asof
-    """, [date_from]).fetchall()
+    SELECT h.asset_id, COALESCE(p.price_eur, 0.0) AS p_ini, h.q_ini
+    FROM holdings_at_ini h
+    LEFT JOIN price_asof p ON p.asset_id = h.asset_id
+    """, [date_from, date_from, date_from]).fetchall()
 
     ini_by_asset: dict[int, dict] = {}
     for row in ini_rows:
         ini_by_asset[int(row[0])] = {
-            "price":     float(row[1]),
-            "price_eur": float(row[2]),
+            "p_ini": float(row[1]),
+            "q_ini": float(row[2]),
+        }
+
+    # Buy statistics during (date_from, date_to] per asset — for new/added shares
+    period_buy_rows = conn.execute("""
+        SELECT asset_id,
+               SUM(CASE WHEN type='buy' THEN shares::DOUBLE ELSE 0.0 END) AS buy_shares,
+               SUM(CASE WHEN type='buy' THEN shares::DOUBLE * price_eur::DOUBLE ELSE 0.0 END) AS buy_cost
+        FROM transactions
+        WHERE date > ? AND date <= ?
+        GROUP BY asset_id
+    """, [date_from, date_to]).fetchall()
+
+    period_buys: dict[int, dict] = {}
+    for row in period_buy_rows:
+        period_buys[int(row[0])] = {
+            "buy_shares": float(row[1]),
+            "buy_cost":   float(row[2]),
         }
 
     result: dict[int, dict] = {}
@@ -670,17 +700,33 @@ def _compute_period_holding_data(
             }
             continue
 
-        ini = ini_by_asset.get(asset_id)
-        # Fallback: use avg_buy_price_eur when no historical price exists at date_from
-        price_ini_eur = ini["price_eur"] if ini else h.avg_buy_price_eur
-        period_start_value = h.total_shares * price_ini_eur
+        ini   = ini_by_asset.get(asset_id, {"p_ini": 0.0, "q_ini": 0.0})
+        q_ini = ini["q_ini"]
+        p_ini = ini["p_ini"]
+        q_now = h.total_shares
+        p_now = h.current_price_eur
 
-        cambio_eur = h.total_shares * (h.current_price_eur - price_ini_eur)
-        invested_eur = h.total_shares * h.avg_buy_price_eur
-        cambio_pct = (cambio_eur / invested_eur * 100) if invested_eur > 0.01 else None
+        buys        = period_buys.get(asset_id, {"buy_shares": 0.0, "buy_cost": 0.0})
+        buy_shares  = buys["buy_shares"]
+        buy_cost    = buys["buy_cost"]
+        period_avg  = buy_cost / buy_shares if buy_shares > 0 else h.avg_buy_price_eur
+
+        if q_ini <= 0:
+            # No position at period start — all current shares acquired during period
+            reference_cost = q_now * period_avg
+        elif q_now <= q_ini:
+            # Position reduced or unchanged — all current shares from before period
+            reference_cost = q_now * p_ini
+        else:
+            # Mixed: pre-period shares plus net-new shares bought during period
+            reference_cost = q_ini * p_ini + (q_now - q_ini) * period_avg
+
+        cambio_eur   = q_now * p_now - reference_cost
+        invested_eur = q_now * h.avg_buy_price_eur
+        cambio_pct   = (cambio_eur / invested_eur * 100) if invested_eur > 0.01 else None
 
         result[asset_id] = {
-            "period_start_value_eur": period_start_value,
+            "period_start_value_eur": reference_cost,
             "cambio_eur": cambio_eur,
             "cambio_pct": cambio_pct,
         }
@@ -1006,42 +1052,91 @@ def get_summary(
         if broker_list:
             cambio_broker_filter = _in_clause("t.broker", broker_list, cambio_params)
 
-        cambio_params_full = cambio_params + [effective_date_to, effective_date_to, date_from, effective_date_to]
+        # DuckDB ? params consumed in CTE order:
+        # holdings_final: type+broker filters, date_to
+        # holdings_ini:   date_from × 2 (no extra filters, outer JOIN handles scope)
+        # period_buys:    type+broker filters, date_from, date_to
+        # price_final:    date_to
+        # price_initial:  date_from
+        # avg_cost:       type+broker filters, date_to
+        cambio_params_full = (
+            cambio_params + [effective_date_to]              # holdings_final
+            + [date_from, date_from]                         # holdings_ini
+            + cambio_params + [date_from, effective_date_to] # period_buys
+            + [effective_date_to]                            # price_final
+            + [date_from]                                    # price_initial
+            + cambio_params + [effective_date_to]            # avg_cost
+        )
         cambio_row = conn.execute(f"""
         WITH holdings_final AS (
-            SELECT asset_id,
-                   SUM(CASE WHEN type='buy' THEN shares::DOUBLE ELSE -shares::DOUBLE END) AS shares
+            SELECT t.asset_id,
+                   SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE -t.shares::DOUBLE END) AS q_now,
+                   SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE * t.price_eur::DOUBLE ELSE 0 END) /
+                       NULLIF(SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE 0 END), 0) AS avg_buy_eur
             FROM transactions t
             {cambio_asset_join}
             WHERE 1=1 {cambio_type_filter} {cambio_broker_filter} AND t.date <= ?
-            GROUP BY asset_id
-            HAVING SUM(CASE WHEN type='buy' THEN shares::DOUBLE ELSE -shares::DOUBLE END) > 0.000001
+            GROUP BY t.asset_id
+            HAVING SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE -t.shares::DOUBLE END) > 0.000001
+        ),
+        holdings_ini AS (
+            SELECT t.asset_id,
+                   GREATEST(SUM(
+                       CASE WHEN t.type='buy'  AND t.date <= ? THEN  t.shares::DOUBLE
+                            WHEN t.type='sell' AND t.date <= ? THEN -t.shares::DOUBLE
+                            ELSE 0.0 END
+                   ), 0.0) AS q_ini
+            FROM transactions t
+            GROUP BY t.asset_id
+        ),
+        period_buys AS (
+            SELECT t.asset_id,
+                   SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE 0 END) AS buy_shares,
+                   SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE * t.price_eur::DOUBLE ELSE 0 END) AS buy_cost
+            FROM transactions t
+            {cambio_asset_join}
+            WHERE 1=1 {cambio_type_filter} {cambio_broker_filter} AND t.date > ? AND t.date <= ?
+            GROUP BY t.asset_id
         ),
         price_final AS (
-            SELECT DISTINCT ON (asset_id) asset_id, price_eur::DOUBLE AS price_eur
+            SELECT DISTINCT ON (asset_id) asset_id, price_eur::DOUBLE AS p_now
             FROM prices WHERE date <= ?
             ORDER BY asset_id, date DESC
         ),
         price_initial AS (
-            SELECT DISTINCT ON (asset_id) asset_id, price_eur::DOUBLE AS price_eur
+            SELECT DISTINCT ON (asset_id) asset_id, price_eur::DOUBLE AS p_ini
             FROM prices WHERE date <= ?
             ORDER BY asset_id, date DESC
         ),
         avg_cost AS (
-            SELECT asset_id,
-                   SUM(CASE WHEN type='buy' THEN shares::DOUBLE * price_eur::DOUBLE ELSE 0 END) /
-                   NULLIF(SUM(CASE WHEN type='buy' THEN shares::DOUBLE ELSE 0 END), 0) AS avg_eur
-            FROM transactions t2
-            WHERE t2.date <= ?
-            GROUP BY asset_id
+            SELECT t.asset_id,
+                   SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE * t.price_eur::DOUBLE ELSE 0 END) /
+                   NULLIF(SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE 0 END), 0) AS avg_eur
+            FROM transactions t
+            {cambio_asset_join}
+            WHERE 1=1 {cambio_type_filter} {cambio_broker_filter} AND t.date <= ?
+            GROUP BY t.asset_id
         )
         SELECT COALESCE(SUM(
-            h.shares * (pf.price_eur - COALESCE(pi.price_eur, ac.avg_eur, pf.price_eur))
+            h.q_now * pf.p_now - (
+                CASE
+                    WHEN COALESCE(hi.q_ini, 0) <= 0 THEN
+                        h.q_now * COALESCE(pb.buy_cost / NULLIF(pb.buy_shares, 0), ac.avg_eur, pf.p_now)
+                    WHEN h.q_now <= COALESCE(hi.q_ini, 0) THEN
+                        h.q_now * COALESCE(pi.p_ini, ac.avg_eur)
+                    ELSE
+                        COALESCE(hi.q_ini, 0) * COALESCE(pi.p_ini, ac.avg_eur)
+                        + (h.q_now - COALESCE(hi.q_ini, 0))
+                          * COALESCE(pb.buy_cost / NULLIF(pb.buy_shares, 0), ac.avg_eur, pf.p_now)
+                END
+            )
         ), 0)
         FROM holdings_final h
-        JOIN price_final pf ON pf.asset_id = h.asset_id
+        JOIN  price_final  pf ON pf.asset_id = h.asset_id
+        LEFT JOIN holdings_ini hi ON hi.asset_id = h.asset_id
+        LEFT JOIN period_buys  pb ON pb.asset_id = h.asset_id
         LEFT JOIN price_initial pi ON pi.asset_id = h.asset_id
-        LEFT JOIN avg_cost ac ON ac.asset_id = h.asset_id
+        LEFT JOIN avg_cost      ac ON ac.asset_id = h.asset_id
         """, cambio_params_full).fetchone()
 
         tx_cambio = float(cambio_row[0]) if cambio_row and cambio_row[0] is not None else 0.0
