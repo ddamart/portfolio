@@ -32,20 +32,12 @@ const TYPE_LABEL: Record<string, string> = {
 
 function buildCambioTip(row: HoldingRow, pStart: number): string {
   const pIniEur = pStart / row.total_shares
-  const pFinEur = row.current_price_eur ?? 0
-  const isEur = row.currency === 'EUR'
-  const priceIni = isEur
-    ? formatEur(pIniEur, 4)
-    : `${formatCcy(pIniEur / (pFinEur > 0 && row.current_price != null ? pFinEur / row.current_price : 1), row.currency, 4)} (${formatEur(pIniEur, 4)})`
-  const priceFin = isEur
-    ? formatEur(pFinEur, 4)
-    : `${formatCcy(row.current_price ?? 0, row.currency, 4)} (${formatEur(pFinEur, 4)})`
+  // Only EUR for period-start: back-converting to native using today's FX rate
+  // would be wrong (historical FX differs). End values are visible in the columns.
+  const priceIni = formatEur(pIniEur, 4)
   return [
     `Precio inicio: ${priceIni}`,
-    `Precio fin:    ${priceFin}`,
     `Valor inicio:  ${formatEur(pStart)}`,
-    `Valor fin:     ${formatEur(row.value_eur ?? 0)}`,
-    `Cambio:        ${formatEur(row.cambio_eur ?? 0)}`,
   ].join('\n')
 }
 
