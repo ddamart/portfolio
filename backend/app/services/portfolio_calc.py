@@ -721,9 +721,11 @@ def _compute_period_holding_data(
             # Mixed: pre-period shares plus net-new shares bought during period
             reference_cost = q_ini * p_ini + (q_now - q_ini) * period_avg
 
-        cambio_eur   = q_now * p_now - reference_cost
-        invested_eur = q_now * h.avg_buy_price_eur
-        cambio_pct   = (cambio_eur / invested_eur * 100) if invested_eur > 0.01 else None
+        cambio_eur = q_now * p_now - reference_cost
+        # % over period-start value (reference_cost), not all-time invested.
+        # This makes Cambio % ≈ actual price movement %, avoiding inflation
+        # when cost basis is far below current market value.
+        cambio_pct = (cambio_eur / reference_cost * 100) if reference_cost > 0.01 else None
 
         result[asset_id] = {
             "period_start_value_eur": reference_cost,

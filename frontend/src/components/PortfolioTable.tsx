@@ -214,7 +214,11 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
       cell: info => {
         const row = info.row.original
         if (row.cambio_eur == null) return <span className="text-gray-400">—</span>
-        return <span className={`font-medium ${pnlClass(row.cambio_eur)}`}>{formatEur(row.cambio_eur)}</span>
+        const pStart = row.period_start_value_eur
+        const tip = pStart != null
+          ? `Valor inicio: ${formatEur(pStart)}\nValor fin: ${formatEur(row.value_eur ?? 0)}\nCambio: ${formatEur(row.cambio_eur)}`
+          : undefined
+        return <span className={`font-medium ${pnlClass(row.cambio_eur)}`} title={tip}>{formatEur(row.cambio_eur)}</span>
       },
     }),
     col.accessor('cambio_pct', {
@@ -222,8 +226,13 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
       sortUndefined: 'last',
       cell: info => {
         const v = info.getValue()
+        const row = info.row.original
         if (v == null) return <span className="text-gray-400">—</span>
-        return <span className={pnlClass(v)}>{formatPct(v)}</span>
+        const pStart = row.period_start_value_eur
+        const tip = pStart != null
+          ? `${formatEur(row.cambio_eur ?? 0)} / ${formatEur(pStart)} = ${formatPct(v)}`
+          : undefined
+        return <span className={pnlClass(v)} title={tip}>{formatPct(v)}</span>
       },
     }),
     ...(!hasPeriod ? [col.accessor('daily_change_pct', {
