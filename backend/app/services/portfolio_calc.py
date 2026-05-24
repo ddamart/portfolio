@@ -872,17 +872,33 @@ def get_summary(
     summary_params.append(effective_date_to)
 
     row = conn.execute(f"""
-    WITH holdings AS (
+    WITH avco AS (
+        -- Running AVCO per asset: same approach as transactions list view.
+        -- Sells don't change AVCO; the avco_eur on a sell row is the cost basis per share
+        -- AT THAT MOMENT, needed to correctly reduce cost_basis on partial redemptions.
         SELECT
-            t.asset_id,
-            SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE -t.shares::DOUBLE END) AS total_shares,
-            SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE * t.price_eur::DOUBLE ELSE 0.0 END) /
-                NULLIF(SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE 0.0 END), 0) AS avg_buy_price_eur
+            t.asset_id, t.type, t.shares::DOUBLE AS shares, t.price_eur::DOUBLE AS price_eur,
+            SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE * t.price_eur::DOUBLE ELSE 0.0 END) OVER (
+                PARTITION BY t.asset_id ORDER BY t.date, t.id
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            ) / NULLIF(SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE 0.0 END) OVER (
+                PARTITION BY t.asset_id ORDER BY t.date, t.id
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            ), 0) AS avco_eur
         FROM transactions t
         {asset_join}
         WHERE 1=1 {type_filter} {broker_filter} {date_to_filter}
-        GROUP BY t.asset_id
-        HAVING SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE -t.shares::DOUBLE END) > 0.000001
+    ),
+    holdings AS (
+        SELECT
+            asset_id,
+            SUM(CASE WHEN type='buy' THEN shares ELSE -shares END) AS total_shares,
+            -- cost_basis: deducts sell shares at their AVCO at sell time (matches chart step series)
+            SUM(CASE WHEN type='buy' THEN shares * price_eur
+                     ELSE -shares * avco_eur END)                   AS cost_basis
+        FROM avco
+        GROUP BY asset_id
+        HAVING SUM(CASE WHEN type='buy' THEN shares ELSE -shares END) > 0.000001
     ),
     latest_prices AS (
         SELECT DISTINCT ON (asset_id) asset_id, price_eur::DOUBLE AS price_eur, date
@@ -890,17 +906,18 @@ def get_summary(
     ),
     joined AS (
         SELECT
-            h.total_shares * lp.price_eur                               AS value_eur,
-            h.total_shares * h.avg_buy_price_eur                        AS invested_eur,
+            lp.price_eur IS NOT NULL                              AS has_price,
+            h.total_shares * COALESCE(lp.price_eur, 0.0)         AS value_eur,
+            h.cost_basis                                          AS invested_eur,
             lp.date
         FROM holdings h
-        JOIN latest_prices lp ON lp.asset_id = h.asset_id
+        LEFT JOIN latest_prices lp ON lp.asset_id = h.asset_id
     )
     SELECT
-        COALESCE(SUM(value_eur), 0)              AS total_value_eur,
-        COALESCE(SUM(invested_eur), 0)           AS total_invested_eur,
-        COALESCE(SUM(value_eur - invested_eur), 0) AS total_pnl_eur,
-        MAX(date)                                AS last_updated
+        COALESCE(SUM(CASE WHEN has_price THEN value_eur ELSE 0 END), 0)                          AS total_value_eur,
+        COALESCE(SUM(invested_eur), 0)                                                            AS total_invested_eur,
+        COALESCE(SUM(CASE WHEN has_price THEN value_eur - invested_eur ELSE 0 END), 0)            AS total_pnl_eur,
+        MAX(date)                                                                                  AS last_updated
     FROM joined
     """, summary_params).fetchone()
 
