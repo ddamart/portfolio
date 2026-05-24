@@ -10,7 +10,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { Asset, HoldingRow } from '../api/client'
 import { portfolioApi } from '../api/client'
 import { useRefresh } from '../contexts/RefreshContext'
-import { formatEur, formatNumber, formatPct, pnlClass, pnlClassMuted } from '../utils/format'
+import { formatCcy, formatEur, formatNumber, formatPct, pnlClass, pnlClassMuted } from '../utils/format'
 import { getPeriodParams } from '../utils/period'
 import { AssetDetailDrawer } from './AssetDetailDrawer'
 import { AssetLogo } from './AssetLogo'
@@ -28,6 +28,25 @@ const BROKER_LABEL: Record<string, string> = {
 
 const TYPE_LABEL: Record<string, string> = {
   stock: 'Stock', etf: 'ETF', fund: 'Fondo', balance: 'Cartera',
+}
+
+function buildCambioTip(row: HoldingRow, pStart: number): string {
+  const pIniEur = pStart / row.total_shares
+  const pFinEur = row.current_price_eur ?? 0
+  const isEur = row.currency === 'EUR'
+  const priceIni = isEur
+    ? formatEur(pIniEur, 4)
+    : `${formatCcy(pIniEur / (pFinEur > 0 && row.current_price != null ? pFinEur / row.current_price : 1), row.currency, 4)} (${formatEur(pIniEur, 4)})`
+  const priceFin = isEur
+    ? formatEur(pFinEur, 4)
+    : `${formatCcy(row.current_price ?? 0, row.currency, 4)} (${formatEur(pFinEur, 4)})`
+  return [
+    `Precio inicio: ${priceIni}`,
+    `Precio fin:    ${priceFin}`,
+    `Valor inicio:  ${formatEur(pStart)}`,
+    `Valor fin:     ${formatEur(row.value_eur ?? 0)}`,
+    `Cambio:        ${formatEur(row.cambio_eur ?? 0)}`,
+  ].join('\n')
 }
 
 export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: {
@@ -215,8 +234,8 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
         const row = info.row.original
         if (row.cambio_eur == null) return <span className="text-gray-400">—</span>
         const pStart = row.period_start_value_eur
-        const tip = pStart != null
-          ? `Valor inicio: ${formatEur(pStart)}\nValor fin: ${formatEur(row.value_eur ?? 0)}\nCambio: ${formatEur(row.cambio_eur)}`
+        const tip = pStart != null && row.total_shares > 0
+          ? buildCambioTip(row, pStart)
           : undefined
         return <span className={`font-medium ${pnlClass(row.cambio_eur)}`} title={tip}>{formatEur(row.cambio_eur)}</span>
       },
@@ -229,8 +248,8 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
         const row = info.row.original
         if (v == null) return <span className="text-gray-400">—</span>
         const pStart = row.period_start_value_eur
-        const tip = pStart != null
-          ? `${formatEur(row.cambio_eur ?? 0)} / ${formatEur(pStart)} = ${formatPct(v)}`
+        const tip = pStart != null && row.total_shares > 0
+          ? buildCambioTip(row, pStart)
           : undefined
         return <span className={pnlClass(v)} title={tip}>{formatPct(v)}</span>
       },
