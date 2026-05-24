@@ -50,13 +50,14 @@ export function PortfolioSummaryCard({ period, dateFrom, dateTo, broker, assetTy
 
   return (
     <>
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-        {/* Row 1 */}
+      <div className="grid grid-cols-2 gap-3">
+        {/* Col 1: Valor total, Total invertido, Rendimiento total */}
         <StatCard
           label="Valor total"
           value={formatEur(summary.total_value_eur)}
           sub={summary.last_updated ? `Actualizado: ${summary.last_updated}` : 'Sin precios'}
         />
+        {/* Col 2: G/P no realizada */}
         <StatCard
           label="G/P no realizada"
           value={formatEur(unrealizedEur)}
@@ -65,7 +66,6 @@ export function PortfolioSummaryCard({ period, dateFrom, dateTo, broker, assetTy
           subClass={pnlClass(unrealizedEur)}
         />
 
-        {/* Row 2 */}
         <StatCard
           label="Total invertido"
           value={formatEur(summary.total_invested_eur)}
@@ -80,7 +80,6 @@ export function PortfolioSummaryCard({ period, dateFrom, dateTo, broker, assetTy
           hint="Ver detalle"
         />
 
-        {/* Row 3 */}
         <StatCard
           label="Rendimiento total"
           value={formatEur(rendimientoEur)}

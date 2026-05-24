@@ -128,7 +128,7 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
         )
       },
     }),
-    col.display({
+    col.accessor(row => row.total_shares * row.avg_buy_price_eur, {
       id: 'total_invested',
       header: 'Invertido',
       cell: info => {
@@ -176,9 +176,6 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
         return (
           <div>
             <div className={`font-medium ${pnlClass(eur)}`}>{formatEur(eur)}</div>
-            {row.gain_pct != null && (
-              <div className={`text-xs ${pnlClass(row.gain_pct)}`}>{formatPct(row.gain_pct)}</div>
-            )}
             {!isEur && pnlNative != null && (
               <div className={`text-xs ${pnlClassMuted(pnlNative)}`}>
                 {pnlNative >= 0 ? '+' : ''}{formatNumber(pnlNative, 2)} {row.currency}
@@ -188,20 +185,30 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
         )
       },
     }),
-    col.display({
-      id: 'cambio',
+    col.accessor('gain_pct', {
+      header: 'G/P %',
+      cell: info => {
+        const v = info.getValue()
+        if (v == null) return <span className="text-gray-400">—</span>
+        return <span className={pnlClass(v)}>{formatPct(v)}</span>
+      },
+    }),
+    col.accessor('cambio_eur', {
       header: 'Cambio',
+      sortUndefined: 'last',
       cell: info => {
         const row = info.row.original
         if (row.cambio_eur == null) return <span className="text-gray-400">—</span>
-        return (
-          <div>
-            <div className={`font-medium ${pnlClass(row.cambio_eur)}`}>{formatEur(row.cambio_eur)}</div>
-            {row.cambio_pct != null && (
-              <div className={`text-xs ${pnlClass(row.cambio_pct)}`}>{formatPct(row.cambio_pct)}</div>
-            )}
-          </div>
-        )
+        return <span className={`font-medium ${pnlClass(row.cambio_eur)}`}>{formatEur(row.cambio_eur)}</span>
+      },
+    }),
+    col.accessor('cambio_pct', {
+      header: 'Cambio %',
+      sortUndefined: 'last',
+      cell: info => {
+        const v = info.getValue()
+        if (v == null) return <span className="text-gray-400">—</span>
+        return <span className={pnlClass(v)}>{formatPct(v)}</span>
       },
     }),
     ...(!hasPeriod ? [col.accessor('daily_change_pct', {
@@ -340,24 +347,30 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
                 )}
               </div>
               {/* G/P all-time: Fin - Invertido */}
-              <div className="text-right w-28">
+              <div className="text-right w-24">
                 <p className="text-xs text-gray-400">G/P</p>
-                {h.pnl_eur != null ? (
-                  <>
-                    <p className={`text-sm font-medium ${pnlClass(h.pnl_eur)}`}>{formatEur(h.pnl_eur)}</p>
-                    {h.gain_pct != null && <p className={`text-xs ${pnlClass(h.gain_pct)}`}>{formatPct(h.gain_pct)}</p>}
-                  </>
-                ) : <p className="text-sm text-gray-400">—</p>}
+                {h.pnl_eur != null
+                  ? <p className={`text-sm font-medium ${pnlClass(h.pnl_eur)}`}>{formatEur(h.pnl_eur)}</p>
+                  : <p className="text-sm text-gray-400">—</p>}
+              </div>
+              <div className="text-right w-16">
+                <p className="text-xs text-gray-400">G/P %</p>
+                {h.gain_pct != null
+                  ? <p className={`text-sm ${pnlClass(h.gain_pct)}`}>{formatPct(h.gain_pct)}</p>
+                  : <p className="text-sm text-gray-400">—</p>}
               </div>
               {/* Cambio (period): Fin - Inicio - period_flows */}
-              <div className="text-right w-28">
+              <div className="text-right w-24">
                 <p className="text-xs text-gray-400">Cambio</p>
-                {h.period_gain_eur != null ? (
-                  <>
-                    <p className={`text-sm font-medium ${pnlClass(h.period_gain_eur)}`}>{formatEur(h.period_gain_eur)}</p>
-                    {h.period_gain_pct != null && <p className={`text-xs ${pnlClass(h.period_gain_pct)}`}>{formatPct(h.period_gain_pct)}</p>}
-                  </>
-                ) : <p className="text-sm text-gray-400">—</p>}
+                {h.period_gain_eur != null
+                  ? <p className={`text-sm font-medium ${pnlClass(h.period_gain_eur)}`}>{formatEur(h.period_gain_eur)}</p>
+                  : <p className="text-sm text-gray-400">—</p>}
+              </div>
+              <div className="text-right w-16">
+                <p className="text-xs text-gray-400">Cambio %</p>
+                {h.period_gain_pct != null
+                  ? <p className={`text-sm ${pnlClass(h.period_gain_pct)}`}>{formatPct(h.period_gain_pct)}</p>
+                  : <p className="text-sm text-gray-400">—</p>}
               </div>
               <div className="text-right w-16">
                 <div className="flex items-center gap-1.5 justify-end">
