@@ -413,7 +413,7 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
       {balanceDrawerAsset && (
         <BalanceDrawer
           asset={{ id: balanceDrawerAsset.asset_id, ticker: balanceDrawerAsset.ticker, name: balanceDrawerAsset.name, image_url: balanceDrawerAsset.image_url, type: 'balance', currency: 'EUR', market_id: null, manual_price: true, isin: null, created_at: '', in_portfolio: true } as Asset}
-          onClose={() => { setBalanceDrawerAsset(null); load() }}
+          onClose={() => setBalanceDrawerAsset(null)}
         />
       )}
 
