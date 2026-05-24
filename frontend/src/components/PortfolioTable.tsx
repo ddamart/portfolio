@@ -12,6 +12,7 @@ import { portfolioApi } from '../api/client'
 import { useRefresh } from '../contexts/RefreshContext'
 import { formatEur, formatNumber, formatPct, pnlClass, pnlClassMuted } from '../utils/format'
 import { getPeriodParams } from '../utils/period'
+import { AssetDetailDrawer } from './AssetDetailDrawer'
 import { AssetLogo } from './AssetLogo'
 import { BalanceDrawer } from './BalanceDrawer'
 import { ManualPriceModal } from './ManualPriceModal'
@@ -41,6 +42,7 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
   const [sorting, setSorting] = useState<SortingState>([{ id: 'value_eur', desc: true }])
   const [manualPriceAsset, setManualPriceAsset] = useState<HoldingRow | null>(null)
   const [balanceDrawerAsset, setBalanceDrawerAsset] = useState<HoldingRow | null>(null)
+  const [detailAsset, setDetailAsset] = useState<Asset | null>(null)
   const { lastRefreshAt } = useRefresh()
 
   const regularHoldings = useMemo(() => holdings.filter(h => h.type !== 'balance'), [holdings])
@@ -60,23 +62,36 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
 
   useEffect(() => { load() }, [period, dateFrom, dateTo, broker, assetType, lastRefreshAt])
 
+  const holdingToAsset = (h: HoldingRow): Asset => ({
+    id: h.asset_id, name: h.name, ticker: h.ticker,
+    type: h.type as Asset['type'], currency: h.currency,
+    image_url: h.image_url, manual_price: h.manual_price,
+    market_id: null, isin: null, created_at: '', in_portfolio: true,
+  })
+
   const columns = useMemo(() => [
     col.accessor('name', {
       header: 'Activo',
-      cell: info => (
-        <div className="flex items-center gap-2">
-          <AssetLogo asset={info.row.original} className="w-7 h-7" />
-          <div>
-            <div className="flex items-center gap-1">
-              <span className="font-medium text-gray-900 dark:text-white">{info.getValue()}</span>
-              {info.row.original.manual_price && (
-                <span title="Precio manual" className="text-xs text-amber-500">✎</span>
-              )}
+      cell: info => {
+        const h = info.row.original
+        return (
+          <button
+            className="flex items-center gap-2 text-left hover:opacity-80 transition-opacity"
+            onClick={() => setDetailAsset(holdingToAsset(h))}
+          >
+            <AssetLogo asset={h} className="w-7 h-7" />
+            <div>
+              <div className="flex items-center gap-1">
+                <span className="font-medium text-gray-900 dark:text-white">{info.getValue()}</span>
+                {h.manual_price && (
+                  <span title="Precio manual" className="text-xs text-amber-500">✎</span>
+                )}
+              </div>
+              <span className="text-xs font-mono text-gray-400">{h.ticker}</span>
             </div>
-            <span className="text-xs font-mono text-gray-400">{info.row.original.ticker}</span>
-          </div>
-        </div>
-      ),
+          </button>
+        )
+      },
     }),
     col.accessor('type', {
       header: 'Tipo',
@@ -391,6 +406,10 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
           asset={{ id: balanceDrawerAsset.asset_id, ticker: balanceDrawerAsset.ticker, name: balanceDrawerAsset.name, image_url: balanceDrawerAsset.image_url, type: 'balance', currency: 'EUR', market_id: null, manual_price: true, isin: null, created_at: '', in_portfolio: true } as Asset}
           onClose={() => { setBalanceDrawerAsset(null); load() }}
         />
+      )}
+
+      {detailAsset && (
+        <AssetDetailDrawer asset={detailAsset} onClose={() => setDetailAsset(null)} />
       )}
     </div>
   )
