@@ -11,28 +11,42 @@ import { AssetLogo } from './AssetLogo'
 import { PeriodFilter } from './PeriodFilter'
 import { PriceImportModal } from './PriceImportModal'
 
-function Paginator({ page, totalPages, total, onChange }: {
+function Paginator({ page, totalPages, total, onChange, pageSize, onPageSize }: {
   page: number; totalPages: number; total: number; onChange: (p: number) => void
+  pageSize?: number; onPageSize?: (n: number) => void
 }) {
-  if (totalPages <= 1) return null
+  if (totalPages <= 1 && !onPageSize) return null
   return (
     <div className="flex items-center justify-between mt-3 text-xs text-gray-500">
-      <span>{total} registros · página {page + 1} de {totalPages}</span>
-      <div className="flex gap-1">
-        <button
-          onClick={() => onChange(page - 1)}
-          disabled={page === 0}
-          className="px-2 py-1 rounded border border-gray-200 dark:border-gray-700 disabled:opacity-40 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-        >
-          ‹
-        </button>
-        <button
-          onClick={() => onChange(page + 1)}
-          disabled={page >= totalPages - 1}
-          className="px-2 py-1 rounded border border-gray-200 dark:border-gray-700 disabled:opacity-40 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-        >
-          ›
-        </button>
+      <span>{total} registros · página {page + 1} de {Math.max(totalPages, 1)}</span>
+      <div className="flex items-center gap-2">
+        {onPageSize && pageSize !== undefined && (
+          <select
+            value={pageSize}
+            onChange={e => { onPageSize(Number(e.target.value)) }}
+            className="px-1.5 py-1 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-400 focus:outline-none"
+          >
+            {[10, 20, 50, 100].map(n => <option key={n} value={n}>{n} / pág.</option>)}
+          </select>
+        )}
+        {totalPages > 1 && (
+          <div className="flex gap-1">
+            <button
+              onClick={() => onChange(page - 1)}
+              disabled={page === 0}
+              className="px-2 py-1 rounded border border-gray-200 dark:border-gray-700 disabled:opacity-40 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+            >
+              ‹
+            </button>
+            <button
+              onClick={() => onChange(page + 1)}
+              disabled={page >= totalPages - 1}
+              className="px-2 py-1 rounded border border-gray-200 dark:border-gray-700 disabled:opacity-40 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+            >
+              ›
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -50,6 +64,7 @@ export function AssetDetailDrawer({ asset, onClose }: { asset: Asset; onClose: (
   const [showImport, setShowImport] = useState(false)
   const [txPage, setTxPage] = useState(0)
   const [pricePage, setPricePage] = useState(0)
+  const [pricePageSize, setPricePageSize] = useState(20)
 
   // Drag-to-zoom state
   const [dragStart, setDragStart] = useState<string | null>(null)
@@ -57,7 +72,6 @@ export function AssetDetailDrawer({ asset, onClose }: { asset: Asset; onClose: (
   const [isDragging, setIsDragging] = useState(false)
 
   const TX_PAGE_SIZE = 10
-  const PRICE_PAGE_SIZE = 20
 
   useEffect(() => {
     setLoadingPrices(true)
@@ -400,8 +414,8 @@ export function AssetDetailDrawer({ asset, onClose }: { asset: Asset; onClose: (
                 <p className="text-sm text-gray-400">Sin datos de precio para el período seleccionado</p>
               ) : (() => {
                 const sorted = [...prices].reverse()
-                const totalPages = Math.ceil(sorted.length / PRICE_PAGE_SIZE)
-                const page = sorted.slice(pricePage * PRICE_PAGE_SIZE, (pricePage + 1) * PRICE_PAGE_SIZE)
+                const totalPages = Math.ceil(sorted.length / pricePageSize)
+                const page = sorted.slice(pricePage * pricePageSize, (pricePage + 1) * pricePageSize)
                 return (
                   <>
                     <div className="overflow-x-auto">
@@ -424,7 +438,14 @@ export function AssetDetailDrawer({ asset, onClose }: { asset: Asset; onClose: (
                         </tbody>
                       </table>
                     </div>
-                    <Paginator page={pricePage} totalPages={totalPages} total={sorted.length} onChange={setPricePage} />
+                    <Paginator
+                      page={pricePage}
+                      totalPages={totalPages}
+                      total={sorted.length}
+                      onChange={setPricePage}
+                      pageSize={pricePageSize}
+                      onPageSize={n => { setPricePageSize(n); setPricePage(0) }}
+                    />
                   </>
                 )
               })()
