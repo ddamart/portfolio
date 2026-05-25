@@ -39,7 +39,7 @@ function Paginator({ page, totalPages, total, onChange }: {
 }
 
 export function AssetDetailDrawer({ asset, onClose }: { asset: Asset; onClose: () => void }) {
-  const [period, setPeriod] = useState('1y')
+  const [period, setPeriod] = useState('ytd')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [prices, setPrices] = useState<AssetPricePoint[]>([])

@@ -76,7 +76,7 @@ export function PeriodFilter({ value, onChange, dateFrom = '', dateTo = '', onDa
           />
           {isCustom && (
             <button
-              onClick={() => { onDateRange('', ''); onChange('1y') }}
+              onClick={() => { onDateRange('', ''); onChange('ytd') }}
               className="ml-1 text-sm text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
               title="Limpiar rango"
             >

@@ -58,7 +58,7 @@ function FilterPills({
 const col = createColumnHelper<Transaction>()
 
 export function TransactionTable() {
-  const [period, setPeriod] = useState('all')
+  const [period, setPeriod] = useState('ytd')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [transactions, setTransactions] = useState<Transaction[]>([])
