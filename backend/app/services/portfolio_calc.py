@@ -130,11 +130,6 @@ def get_holdings(
             SELECT asset_id, MAX(date) AS max_date FROM prices GROUP BY asset_id
         ) latest ON p.asset_id = latest.asset_id AND p.date < latest.max_date
         ORDER BY p.asset_id, p.date DESC
-    ),
-    total_invested AS (
-        -- Allocation denominator based on cost basis (invested), not market value
-        SELECT COALESCE(SUM(h2.total_shares * h2.avg_buy_price_eur), 0.0) AS total
-        FROM holdings h2
     )
     SELECT
         a.id                                                              AS asset_id,
@@ -156,14 +151,11 @@ def get_holdings(
         h.total_shares * lp.price - h.total_shares * (h.avg_buy_price_eur / NULLIF(lp.price_eur / NULLIF(lp.price, 0), 0)) AS pnl_ccy,
         (lp.price_eur / NULLIF(h.avg_buy_price_eur, 0) - 1) * 100       AS gain_pct,
         (lp.price_eur / NULLIF(pp.prev_price_eur, 0) - 1) * 100         AS daily_change_pct,
-        CASE WHEN ti.total > 0
-             THEN (h.total_shares * h.avg_buy_price_eur) / ti.total * 100
-             ELSE 0 END                                                   AS allocation_pct
+        0.0                                                               AS allocation_pct
     FROM holdings h
     JOIN assets a ON a.id = h.asset_id
     LEFT JOIN latest_prices lp ON lp.asset_id = h.asset_id
     LEFT JOIN prev_prices pp ON pp.asset_id = h.asset_id
-    CROSS JOIN total_invested ti
     WHERE 1=1 {type_filter}
     ORDER BY COALESCE(value_eur, -1) DESC
     """
@@ -206,17 +198,26 @@ def get_holdings(
         )
         result = [h.model_copy(update=period_data.get(h.asset_id, {})) for h in result]
 
+    # Allocation by market value for TX assets.
+    # Computed here (Python) so it correctly reflects all active filters — the SQL
+    # denominator can't know which type-filter rows will survive the WHERE clause.
+    tx_value_total = sum((h.value_eur or 0.0) for h in result)
+    if tx_value_total > 0:
+        result = [
+            h.model_copy(update={"allocation_pct": (h.value_eur or 0.0) / tx_value_total * 100})
+            for h in result
+        ]
+
     # Append balance-type asset rows (unless a non-balance asset_type filter is active)
     if not type_list or 'balance' in type_list:
         balance_rows = _get_balance_holdings(conn, latest_date, broker=broker, date_from=date_from)
         if balance_rows:
-            # Allocation pools are separate: balance % among balance, tx assets % among tx assets
-            # Both pools use invested (cost basis) as denominator, not market value
-            bal_invested_total = sum((h.balance_contributions_eur or 0.0) for h in balance_rows)
-            if bal_invested_total > 0:
+            # Balance allocation: separate pool, also by market value (current snapshot)
+            bal_value_total = sum((h.value_eur or 0.0) for h in balance_rows)
+            if bal_value_total > 0:
                 balance_rows = [
                     h.model_copy(update={
-                        "allocation_pct": (h.balance_contributions_eur or 0.0) / bal_invested_total * 100
+                        "allocation_pct": (h.value_eur or 0.0) / bal_value_total * 100
                     })
                     for h in balance_rows
                 ]

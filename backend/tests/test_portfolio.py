@@ -606,25 +606,26 @@ class TestCambioEur:
         assert row["cambio_eur"] is None
 
 
-class TestAllocationByInvested:
-    """allocation_pct must use cost basis (invested), not market value."""
+class TestAllocationByValue:
+    """allocation_pct must use market value, not cost basis."""
 
-    def test_allocation_reflects_invested_not_value(self, client):
-        a1 = create_asset(client, ticker="A1", currency="EUR")
-        a2 = create_asset(client, ticker="A2", currency="EUR")
-        # Both invested €1000, but A1 has grown 2× and A2 is flat
+    def test_allocation_reflects_value_not_invested(self, client):
+        a1 = create_asset(client, ticker="A1V", currency="EUR")
+        a2 = create_asset(client, ticker="A2V", currency="EUR")
+        # Both invested €1000, but A1 has grown 2× → values are €2000 and €1000
         create_buy(client, a1["id"], shares=10, price=100.0, currency="EUR",
                    date="2024-01-02", broker="degiro")
         create_buy(client, a2["id"], shares=10, price=100.0, currency="EUR",
                    date="2024-01-02", broker="degiro")
-        seed_price(a1["id"], "2024-01-02", 200.0)  # A1 grew 2×
-        seed_price(a2["id"], "2024-01-02", 100.0)  # A2 flat
+        seed_price(a1["id"], "2024-01-02", 200.0)  # A1 value = €2000
+        seed_price(a2["id"], "2024-01-02", 100.0)  # A2 value = €1000
 
         rows = client.get("/api/portfolio/holdings").json()
-        allocs = {r["ticker"]: r["allocation_pct"] for r in rows}
-        # Both invested €1000 out of €2000 total → 50% each (not 66% / 33% by value)
-        assert allocs["A1"] == pytest.approx(50.0, abs=1.0)
-        assert allocs["A2"] == pytest.approx(50.0, abs=1.0)
+        allocs = {r["ticker"]: r["allocation_pct"] for r in rows
+                  if r["ticker"] in ("A1V", "A2V")}
+        # A1 is 2000/3000 ≈ 66.7%, A2 is 1000/3000 ≈ 33.3%
+        assert allocs["A1V"] == pytest.approx(66.67, abs=1.0)
+        assert allocs["A2V"] == pytest.approx(33.33, abs=1.0)
         assert sum(allocs.values()) == pytest.approx(100.0, abs=0.5)
 
 
