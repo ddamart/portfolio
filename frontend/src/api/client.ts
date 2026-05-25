@@ -210,8 +210,8 @@ export const assetsApi = {
   markets: () => api.get<Market[]>('/assets/markets').then(r => r.data),
   metadata: (ticker: string) => api.get<AssetMeta>(`/assets/metadata?ticker=${encodeURIComponent(ticker)}`).then(r => r.data),
   lookup: (q: string) => api.get<AssetLookup>(`/assets/lookup?q=${encodeURIComponent(q)}`).then(r => r.data),
-  history: (id: number, period: string) =>
-    api.get<AssetPricePoint[]>(`/assets/${id}/history?period=${period}`).then(r => r.data),
+  history: (id: number, params: Record<string, string>) =>
+    api.get<AssetPricePoint[]>(`/assets/${id}/history`, { params }).then(r => r.data),
 }
 
 export const transactionsApi = {

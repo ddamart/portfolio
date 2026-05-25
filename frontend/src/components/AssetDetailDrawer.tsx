@@ -1,21 +1,15 @@
 import { useEffect, useState } from 'react'
 import {
-  Area, CartesianGrid, ComposedChart, ReferenceDot,
+  Area, CartesianGrid, ComposedChart, ReferenceArea, ReferenceDot,
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
 import type { Asset, AssetPricePoint, Transaction } from '../api/client'
 import { assetsApi, transactionsApi } from '../api/client'
 import { fmtAxisCcy, formatCcy, formatEur, formatNumber } from '../utils/format'
+import { getPeriodParams } from '../utils/period'
 import { AssetLogo } from './AssetLogo'
+import { PeriodFilter } from './PeriodFilter'
 import { PriceImportModal } from './PriceImportModal'
-
-const PERIODS = [
-  { key: '1m', label: '1M' },
-  { key: '3m', label: '3M' },
-  { key: '6m', label: '6M' },
-  { key: '1y', label: '1A' },
-  { key: 'all', label: 'Todo' },
-]
 
 function Paginator({ page, totalPages, total, onChange }: {
   page: number; totalPages: number; total: number; onChange: (p: number) => void
@@ -46,6 +40,8 @@ function Paginator({ page, totalPages, total, onChange }: {
 
 export function AssetDetailDrawer({ asset, onClose }: { asset: Asset; onClose: () => void }) {
   const [period, setPeriod] = useState('1y')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
   const [prices, setPrices] = useState<AssetPricePoint[]>([])
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [loadingPrices, setLoadingPrices] = useState(true)
@@ -55,17 +51,23 @@ export function AssetDetailDrawer({ asset, onClose }: { asset: Asset; onClose: (
   const [txPage, setTxPage] = useState(0)
   const [pricePage, setPricePage] = useState(0)
 
+  // Drag-to-zoom state
+  const [dragStart, setDragStart] = useState<string | null>(null)
+  const [dragEnd, setDragEnd] = useState<string | null>(null)
+  const [isDragging, setIsDragging] = useState(false)
+
   const TX_PAGE_SIZE = 10
   const PRICE_PAGE_SIZE = 20
 
   useEffect(() => {
     setLoadingPrices(true)
     setPricePage(0)
-    assetsApi.history(asset.id, period)
+    const params = getPeriodParams(period, dateFrom, dateTo)
+    assetsApi.history(asset.id, params)
       .then(setPrices)
       .catch(() => setPrices([]))
       .finally(() => setLoadingPrices(false))
-  }, [asset.id, period])
+  }, [asset.id, period, dateFrom, dateTo])
 
   useEffect(() => {
     setLoadingTx(true)
@@ -75,8 +77,47 @@ export function AssetDetailDrawer({ asset, onClose }: { asset: Asset; onClose: (
       .finally(() => setLoadingTx(false))
   }, [asset.id])
 
+  const handleDateRange = (from: string, to: string) => {
+    setDateFrom(from)
+    setDateTo(to)
+  }
+
+  // Drag handlers
+  const handleMouseDown = (e: any) => {
+    if (!e?.activeLabel) return
+    setDragStart(e.activeLabel)
+    setDragEnd(e.activeLabel)
+    setIsDragging(true)
+  }
+
+  const handleMouseMove = (e: any) => {
+    if (!isDragging || !e?.activeLabel) return
+    setDragEnd(e.activeLabel)
+  }
+
+  const handleMouseUp = (e: any) => {
+    if (!isDragging || !dragStart) { setIsDragging(false); return }
+    const end = e?.activeLabel ?? dragEnd ?? dragStart
+    const from = dragStart <= end ? dragStart : end
+    const to   = dragStart <= end ? end : dragStart
+    setDragStart(null)
+    setDragEnd(null)
+    setIsDragging(false)
+    if (from !== to) {
+      setDateFrom(from)
+      setDateTo(to)
+      setPeriod('custom')
+    }
+  }
+
+  const handleMouseLeave = () => {
+    if (isDragging) { setDragStart(null); setDragEnd(null); setIsDragging(false) }
+  }
+
+  const selX1 = dragStart && dragEnd ? (dragStart <= dragEnd ? dragStart : dragEnd) : null
+  const selX2 = dragStart && dragEnd ? (dragStart <= dragEnd ? dragEnd : dragStart) : null
+
   // Snap a transaction date to the nearest available price data point.
-  // This handles weekends/holidays where there's no price entry.
   const snapToPrice = (dateStr: string): AssetPricePoint | null => {
     if (prices.length === 0) return null
     const exact = prices.find(p => p.date === dateStr)
@@ -147,21 +188,16 @@ export function AssetDetailDrawer({ asset, onClose }: { asset: Asset; onClose: (
         <div className="flex-1 overflow-y-auto">
           {/* Chart section */}
           <div className="px-6 pt-4 pb-2">
-            {/* Period tabs */}
-            <div className="flex gap-1 mb-3">
-              {PERIODS.map(p => (
-                <button
-                  key={p.key}
-                  onClick={() => setPeriod(p.key)}
-                  className={`px-3 py-1 text-xs rounded-full font-medium transition-colors ${
-                    period === p.key
-                      ? 'bg-blue-600 text-white'
-                      : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
-                  }`}
-                >
-                  {p.label}
-                </button>
-              ))}
+            {/* Period filter + drag hint */}
+            <div className="flex flex-wrap items-center gap-2 mb-3">
+              <PeriodFilter
+                value={period}
+                onChange={setPeriod}
+                dateFrom={dateFrom}
+                dateTo={dateTo}
+                onDateRange={handleDateRange}
+              />
+              <span className="text-xs text-gray-400 dark:text-gray-500">· arrastra para filtrar</span>
             </div>
 
             {loadingPrices ? (
@@ -172,7 +208,15 @@ export function AssetDetailDrawer({ asset, onClose }: { asset: Asset; onClose: (
               </div>
             ) : (
               <ResponsiveContainer width="100%" height={220}>
-                <ComposedChart data={prices} margin={{ top: 10, right: 8, left: 0, bottom: 0 }}>
+                <ComposedChart
+                  data={prices}
+                  margin={{ top: 10, right: 8, left: 0, bottom: 0 }}
+                  style={{ cursor: isDragging ? 'col-resize' : 'crosshair' }}
+                  onMouseDown={handleMouseDown}
+                  onMouseMove={handleMouseMove}
+                  onMouseUp={handleMouseUp}
+                  onMouseLeave={handleMouseLeave}
+                >
                   <defs>
                     <linearGradient id={`assetGrad${asset.id}`} x1="0" y1="0" x2="0" y2="1">
                       <stop offset="5%" stopColor={color} stopOpacity={0.18} />
@@ -190,17 +234,19 @@ export function AssetDetailDrawer({ asset, onClose }: { asset: Asset; onClose: (
                     tickFormatter={v => fmtAxisCcy(v, currency)}
                     width={64}
                   />
-                  <Tooltip
-                    formatter={(v) => [formatCcy(Number(v), currency), 'Precio']}
-                    labelFormatter={l => `Fecha: ${l}`}
-                    contentStyle={{
-                      background: '#1f2937',
-                      border: 'none',
-                      borderRadius: 8,
-                      color: '#f9fafb',
-                      fontSize: 12,
-                    }}
-                  />
+                  {!isDragging && (
+                    <Tooltip
+                      formatter={(v) => [formatCcy(Number(v), currency), 'Precio']}
+                      labelFormatter={l => `Fecha: ${l}`}
+                      contentStyle={{
+                        background: '#1f2937',
+                        border: 'none',
+                        borderRadius: 8,
+                        color: '#f9fafb',
+                        fontSize: 12,
+                      }}
+                    />
+                  )}
                   <Area
                     type="monotone"
                     dataKey="price"
@@ -210,6 +256,17 @@ export function AssetDetailDrawer({ asset, onClose }: { asset: Asset; onClose: (
                     dot={false}
                     activeDot={{ r: 3, fill: color }}
                   />
+                  {isDragging && selX1 && selX2 && (
+                    <ReferenceArea
+                      x1={selX1}
+                      x2={selX2}
+                      fill="#6366f1"
+                      fillOpacity={0.15}
+                      stroke="#6366f1"
+                      strokeOpacity={0.4}
+                      strokeWidth={1}
+                    />
+                  )}
                   {visibleTransactions.map(tx => {
                     const snap = snapToPrice(tx.date)
                     if (!snap) return null
@@ -383,7 +440,8 @@ export function AssetDetailDrawer({ asset, onClose }: { asset: Asset; onClose: (
           onSaved={() => {
             setShowImport(false)
             setLoadingPrices(true)
-            assetsApi.history(asset.id, period).then(setPrices).finally(() => setLoadingPrices(false))
+            const params = getPeriodParams(period, dateFrom, dateTo)
+            assetsApi.history(asset.id, params).then(setPrices).finally(() => setLoadingPrices(false))
           }}
         />
       )}

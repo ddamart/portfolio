@@ -2,6 +2,7 @@ const PERIODS = [
   { label: '1D', value: '1d' },
   { label: '1S', value: '1w' },
   { label: '1M', value: '1m' },
+  { label: '3M', value: '3m' },
   { label: '6M', value: '6m' },
   { label: 'YTD', value: 'ytd' },
   { label: '1A', value: '1y' },

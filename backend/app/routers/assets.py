@@ -112,26 +112,40 @@ def lookup_asset(q: str):
 
 
 @router.get("/{asset_id}/history")
-def asset_price_history(asset_id: int, period: str = "1y"):
-    """Return price history for a single asset filtered by period."""
+def asset_price_history(
+    asset_id: int,
+    period: Optional[str] = "1y",
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+):
+    """Return price history for a single asset filtered by period or explicit date range."""
     conn = get_db()
     if not conn.execute("SELECT id FROM assets WHERE id = ?", [asset_id]).fetchone():
         raise HTTPException(status_code=404, detail="Asset not found")
 
+    from datetime import date as date_type
     from app.services.portfolio_calc import _period_to_date_range
-    date_from, _ = _period_to_date_range(period)
 
-    if date_from:
-        rows = conn.execute(
-            "SELECT date, price, price_eur, currency FROM prices WHERE asset_id = ? AND date >= ? ORDER BY date ASC",
-            [asset_id, date_from],
-        ).fetchall()
+    # Explicit dates take priority over period
+    if date_from or date_to:
+        from_date = date_type.fromisoformat(date_from) if date_from else None
+        to_date   = date_type.fromisoformat(date_to)   if date_to   else None
     else:
-        rows = conn.execute(
-            "SELECT date, price, price_eur, currency FROM prices WHERE asset_id = ? ORDER BY date ASC",
-            [asset_id],
-        ).fetchall()
+        from_date, to_date = _period_to_date_range(period or "1y")
 
+    where = "WHERE asset_id = ?"
+    params: list = [asset_id]
+    if from_date:
+        where += " AND date >= ?"
+        params.append(from_date)
+    if to_date:
+        where += " AND date <= ?"
+        params.append(to_date)
+
+    rows = conn.execute(
+        f"SELECT date, price, price_eur, currency FROM prices {where} ORDER BY date ASC",
+        params,
+    ).fetchall()
     return [{"date": str(r[0]), "price": float(r[1]), "price_eur": float(r[2]), "currency": r[3]} for r in rows]
 
 
