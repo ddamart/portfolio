@@ -27,6 +27,33 @@ def _in_clause(column: str, values: list[str], params: list) -> str:
     return f"AND {column} IN ({placeholders})"
 
 
+def _adjust_sparse_date_from(
+    conn: duckdb.DuckDBPyConnection,
+    date_from: date,
+    date_to: date,
+) -> date:
+    """
+    If fewer than 2 price dates exist in [date_from, date_to], return the last
+    available trading day before date_from as the effective period start.
+
+    Prevents Cambio = 0 when date_from falls on a weekend/holiday (e.g. 1D on
+    Monday — Sunday has no prices, so the forward-ASOF reference equals the
+    current price).  Mirrors the same logic in get_chart_data so the reference
+    price always matches the chart's leftmost visible point.
+    """
+    price_count = conn.execute(
+        "SELECT COUNT(DISTINCT date) FROM prices WHERE date >= ? AND date <= ?",
+        [date_from, date_to],
+    ).fetchone()[0]
+    if price_count < 2:
+        prior = conn.execute(
+            "SELECT MAX(date) FROM prices WHERE date < ?", [date_from]
+        ).fetchone()[0]
+        if prior:
+            return prior
+    return date_from
+
+
 def _period_to_date_range(period: str) -> tuple[Optional[date], Optional[date]]:
     today = date.today()
     mapping = {
@@ -248,11 +275,13 @@ def _get_balance_holdings(
     # "Inicio": first snapshot >= date_from; fallback to last snapshot <= date_from
     start_by_asset: dict[int, float] = {}
     if date_from:
-        # First preference: first snapshot >= date_from and <= latest_date (within the period)
+        # First preference: first snapshot >= date_from and strictly before latest_date.
+        # Using < latest_date prevents the Fin snapshot from also becoming Inicio
+        # (which would make Cambio = 0 when the only in-period snapshot is today's).
         after_rows = conn.execute("""
             SELECT DISTINCT ON (asset_id) asset_id, amount_eur
             FROM balance_entries
-            WHERE type = 'snapshot' AND date >= ? AND date <= ?
+            WHERE type = 'snapshot' AND date >= ? AND date < ?
             ORDER BY asset_id, date ASC
         """, [date_from, latest_date]).fetchall()
         start_by_asset = {int(r[0]): float(r[1]) for r in after_rows}
@@ -639,6 +668,10 @@ def _compute_period_holding_data(
       - Q_now > Q_ini → reference = Q_ini × P_ini + (Q_now − Q_ini) × period_avg_buy
     This prevents showing gains from before the position was opened.
     """
+    # Extend date_from back if there are <2 price dates in the period so the
+    # reference price matches the chart's leftmost point (e.g. 1D on Monday).
+    date_from = _adjust_sparse_date_from(conn, date_from, date_to)
+
     # Q_ini (shares at date_from) + P_ini (price at date_from) per asset
     ini_rows = conn.execute("""
     WITH holdings_at_ini AS (
@@ -1066,6 +1099,10 @@ def get_summary(
     unrealized_cambio_eur: Optional[float] = None
     unrealized_cambio_pct: Optional[float] = None
     if date_from:
+        # Align with chart: use last trading day before period when date_from has
+        # no price data (e.g. 1D on Monday — no Sunday prices).
+        cambio_date_from = _adjust_sparse_date_from(conn, date_from, effective_date_to)
+
         cambio_params: list = []
         cambio_type_filter = ""
         cambio_broker_filter = ""
@@ -1078,18 +1115,18 @@ def get_summary(
 
         # DuckDB ? params consumed in CTE order:
         # holdings_final: type+broker filters, date_to
-        # holdings_ini:   date_from × 2 (no extra filters, outer JOIN handles scope)
-        # period_buys:    type+broker filters, date_from, date_to
+        # holdings_ini:   cambio_date_from × 2 (no extra filters, outer JOIN handles scope)
+        # period_buys:    type+broker filters, cambio_date_from, date_to
         # price_final:    date_to
-        # price_initial:  date_from
+        # price_initial:  cambio_date_from
         # avg_cost:       type+broker filters, date_to
         cambio_params_full = (
-            cambio_params + [effective_date_to]              # holdings_final
-            + [date_from, date_from]                         # holdings_ini
-            + cambio_params + [date_from, effective_date_to] # period_buys
-            + [effective_date_to]                            # price_final
-            + [date_from]                                    # price_initial
-            + cambio_params + [effective_date_to]            # avg_cost
+            cambio_params + [effective_date_to]                        # holdings_final
+            + [cambio_date_from, cambio_date_from]                     # holdings_ini
+            + cambio_params + [cambio_date_from, effective_date_to]    # period_buys
+            + [effective_date_to]                                      # price_final
+            + [cambio_date_from]                                       # price_initial
+            + cambio_params + [effective_date_to]                      # avg_cost
         )
         cambio_row = conn.execute(f"""
         WITH holdings_final AS (
@@ -1170,7 +1207,7 @@ def get_summary(
         bal_cambio = 0.0
         if (not type_list or 'balance' in type_list) and not broker_list:
             bal_rows_for_cambio = _get_balance_holdings(
-                conn, effective_date_to, broker=broker, date_from=date_from
+                conn, effective_date_to, broker=broker, date_from=cambio_date_from
             )
             bal_cambio = sum(
                 (h.period_gain_eur or 0.0) for h in bal_rows_for_cambio
@@ -1296,6 +1333,12 @@ def get_chart_data(
 ) -> list[ChartPoint]:
     if period and not date_from:
         date_from, date_to = _period_to_date_range(period)
+
+    # If fewer than 2 price dates exist in the period (e.g. 1D on Monday — no
+    # Sunday data), extend date_from back to the last available trading day so
+    # the chart shows a connecting line instead of isolated dots.
+    if date_from and date_to:
+        date_from = _adjust_sparse_date_from(conn, date_from, date_to)
 
     date_filter = ""
     params: list = []
