@@ -230,7 +230,8 @@ def _apply_schema(conn: duckdb.DuckDBPyConnection) -> None:
             image_url    VARCHAR,
             manual_price BOOLEAN NOT NULL DEFAULT false,
             isin         VARCHAR,
-            created_at   TIMESTAMP DEFAULT current_timestamp
+            created_at   TIMESTAMP DEFAULT current_timestamp,
+            broker       VARCHAR
         )
     """)
 
@@ -241,6 +242,14 @@ def _apply_schema(conn: duckdb.DuckDBPyConnection) -> None:
     """).fetchone()[0]
     if not has_isin:
         conn.execute("ALTER TABLE assets ADD COLUMN isin VARCHAR")
+
+    # Migration: add broker column to assets (nullable; used by balance assets)
+    has_asset_broker = conn.execute("""
+        SELECT COUNT(*) FROM information_schema.columns
+        WHERE table_name = 'assets' AND column_name = 'broker'
+    """).fetchone()[0]
+    if not has_asset_broker:
+        conn.execute("ALTER TABLE assets ADD COLUMN broker VARCHAR")
 
     # Migration: add 'balance' to the allowed asset types CHECK constraint.
     # DuckDB does not support ALTER TABLE DROP/ADD CONSTRAINT on existing tables,

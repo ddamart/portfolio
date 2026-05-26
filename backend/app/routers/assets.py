@@ -12,13 +12,13 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/assets", tags=["assets"])
 
-_ASSET_COLS = "id, name, ticker, type, currency, market_id, image_url, manual_price, isin, created_at"
+_ASSET_COLS = "id, name, ticker, type, currency, market_id, image_url, manual_price, isin, created_at, broker"
 
 def _row_to_out(r, in_portfolio: bool = False) -> AssetOut:
     return AssetOut(
         id=r[0], name=r[1], ticker=r[2], type=r[3], currency=r[4],
         market_id=r[5], image_url=r[6], manual_price=bool(r[7]),
-        isin=r[8], created_at=r[9], in_portfolio=in_portfolio,
+        isin=r[8], created_at=r[9], broker=r[10], in_portfolio=in_portfolio,
     )
 
 
@@ -195,7 +195,7 @@ def list_assets():
         ORDER BY a.name
         """
     ).fetchall()
-    return [_row_to_out(r, in_portfolio=bool(r[10])) for r in rows]
+    return [_row_to_out(r, in_portfolio=bool(r[11])) for r in rows]
 
 
 @router.get("/search", response_model=list[AssetOut])
@@ -241,9 +241,9 @@ def create_asset(body: AssetCreate):
     market_id = body.market_id or _detect_market_id(conn, body.ticker, body.isin, body.type)
 
     conn.execute(
-        """INSERT INTO assets (id, name, ticker, type, currency, market_id, image_url, manual_price, isin, created_at)
-           VALUES (nextval('assets_id_seq'), ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)""",
-        [name, body.ticker, body.type, currency, market_id, image_url, body.manual_price, body.isin],
+        """INSERT INTO assets (id, name, ticker, type, currency, market_id, image_url, manual_price, isin, created_at, broker)
+           VALUES (nextval('assets_id_seq'), ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp, ?)""",
+        [name, body.ticker, body.type, currency, market_id, image_url, body.manual_price, body.isin, body.broker],
     )
 
     row = conn.execute(f"SELECT {_ASSET_COLS} FROM assets WHERE ticker = ?", [body.ticker]).fetchone()

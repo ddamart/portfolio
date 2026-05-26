@@ -233,13 +233,16 @@ def _get_balance_holdings(
     date_from: Optional[date] = None,
 ) -> list[HoldingRow]:
     """Return HoldingRow entries for all balance-type assets."""
-    # broker filter not applicable to balance assets (they have no broker), but we
-    # skip the entire query if a broker filter is set (balance assets have no broker).
-    if broker:
-        return []
+    broker_list = _parse_filter_list(broker)
+    broker_filter = ""
+    broker_params: list = []
+    if broker_list:
+        placeholders = ", ".join("?" * len(broker_list))
+        broker_filter = f"AND a.broker IN ({placeholders})"
+        broker_params = list(broker_list)
 
     # "Fin": last snapshot <= latest_date; fallback to first snapshot >= latest_date
-    fin_rows = conn.execute("""
+    fin_rows = conn.execute(f"""
     WITH snap_before AS (
         SELECT DISTINCT ON (asset_id) asset_id, amount_eur, date AS snap_date
         FROM balance_entries
@@ -254,12 +257,13 @@ def _get_balance_holdings(
     )
     SELECT a.id, a.name, a.ticker, a.currency, a.image_url, a.manual_price,
            COALESCE(sb.amount_eur, sa.amount_eur, 0)         AS value_eur,
-           COALESCE(sb.snap_date, sa.snap_date)              AS snap_date
+           COALESCE(sb.snap_date, sa.snap_date)              AS snap_date,
+           a.broker
     FROM assets a
     LEFT JOIN snap_before sb ON sb.asset_id = a.id
     LEFT JOIN snap_after  sa ON sa.asset_id = a.id
-    WHERE a.type = 'balance'
-    """, [latest_date, latest_date]).fetchall()
+    WHERE a.type = 'balance' {broker_filter}
+    """, [latest_date, latest_date] + broker_params).fetchall()
 
     # "Invertido": all-time net contributions up to latest_date (bug fix: was unfiltered)
     contrib_rows = conn.execute("""
@@ -329,6 +333,7 @@ def _get_balance_holdings(
         manual_price = bool(row[5])
         value_eur = float(row[6]) if row[6] is not None else 0.0
         snap_date = row[7]
+        asset_broker = row[8]
         contrib_eur = contrib_by_asset.get(asset_id, 0.0)
 
         pnl_eur = value_eur - contrib_eur
@@ -361,7 +366,7 @@ def _get_balance_holdings(
                 ticker=ticker,
                 type="balance",
                 currency=currency,
-                broker=None,
+                broker=asset_broker,
                 image_url=image_url,
                 manual_price=manual_price,
                 total_shares=0.0,

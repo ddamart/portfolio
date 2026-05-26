@@ -21,12 +21,20 @@ interface CreateDraft {
   currency: string
   manual_price: boolean
   image_url: string
+  broker: string
 }
 
 const DEFAULT_CREATE: CreateDraft = {
   ticker: '', isin: '', name: '', type: 'stock', market_id: null, currency: 'EUR',
-  manual_price: false, image_url: '',
+  manual_price: false, image_url: '', broker: '',
 }
+
+const BROKERS = [
+  { value: 'openbank', label: 'Openbank' },
+  { value: 'trade_republic', label: 'Trade Republic' },
+  { value: 'revolut', label: 'Revolut' },
+  { value: 'degiro', label: 'Degiro' },
+]
 
 function CreateAssetModal({
   markets, onClose, onSaved,
@@ -83,6 +91,7 @@ function CreateAssetModal({
         image_url:    draft.image_url.trim() || null,
         manual_price: draft.type === 'balance' ? true : draft.manual_price,
         isin:         draft.isin.trim().toUpperCase() || null,
+        broker:       draft.type === 'balance' ? (draft.broker || null) : null,
       })
       toast.success(`Activo "${draft.ticker.toUpperCase()}" creado`)
       onSaved()
@@ -193,9 +202,13 @@ function CreateAssetModal({
             </div>
           )}
           {draft.type === 'balance' ? (
-            <p className="text-xs text-gray-400 dark:text-gray-500 pt-1">
-              Las carteras/cuentas se valoran mediante aportaciones y snapshots manuales, sin cotización de mercado.
-            </p>
+            <div>
+              <label className={labelCls}>Broker / Entidad</label>
+              <select value={draft.broker} onChange={e => setDraft(d => ({ ...d, broker: e.target.value }))} className={inputCls}>
+                <option value="">Sin asignar</option>
+                {BROKERS.map(b => <option key={b.value} value={b.value}>{b.label}</option>)}
+              </select>
+            </div>
           ) : (
             <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 cursor-pointer pt-1">
               <input type="checkbox" checked={draft.manual_price}
@@ -229,6 +242,7 @@ interface EditDraft {
   market_id: number | null
   manual_price: boolean
   image_url: string
+  broker: string
 }
 
 function EditModal({
@@ -244,6 +258,7 @@ function EditModal({
     market_id: asset.market_id,
     manual_price: asset.manual_price,
     image_url: asset.image_url ?? '',
+    broker: asset.broker ?? '',
   })
   const [saving, setSaving] = useState(false)
   const [syncing, setSyncing] = useState(false)
@@ -276,6 +291,7 @@ function EditModal({
         market_id: draft.market_id,
         manual_price: draft.manual_price,
         image_url: draft.image_url.trim() || null,
+        ...(asset.type === 'balance' ? { broker: draft.broker || null } : {}),
       })
       toast.success('Activo actualizado')
       onSaved()
@@ -347,6 +363,15 @@ function EditModal({
               {markets.map(m => <option key={m.id} value={m.id}>{m.name} ({m.country})</option>)}
             </select>
           </div>
+          {asset.type === 'balance' && (
+            <div>
+              <label className={labelCls}>Broker / Entidad</label>
+              <select value={draft.broker} onChange={e => setDraft(d => ({ ...d, broker: e.target.value }))} className={inputCls}>
+                <option value="">Sin asignar</option>
+                {BROKERS.map(b => <option key={b.value} value={b.value}>{b.label}</option>)}
+              </select>
+            </div>
+          )}
           <div>
             <label className={labelCls}>URL imagen (logo)</label>
             <input value={draft.image_url} onChange={e => setDraft(d => ({ ...d, image_url: e.target.value }))}

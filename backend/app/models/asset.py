@@ -25,12 +25,13 @@ def _validate_isin(v: Optional[str]) -> Optional[str]:
 class AssetCreate(BaseModel):
     name: str
     ticker: str
-    type: str  # etf | stock | fund
+    type: str  # etf | stock | fund | balance
     currency: str = "EUR"
     market_id: Optional[int] = None
     image_url: Optional[str] = None
     manual_price: bool = False
     isin: Optional[str] = None
+    broker: Optional[str] = None
 
     @field_validator('isin')
     @classmethod
@@ -46,6 +47,7 @@ class AssetUpdate(BaseModel):
     manual_price: Optional[bool] = None
     market_id: Optional[int] = None
     currency: Optional[str] = None
+    broker: Optional[str] = None
 
     @field_validator('isin')
     @classmethod
@@ -63,5 +65,6 @@ class AssetOut(BaseModel):
     image_url: Optional[str]
     manual_price: bool
     isin: Optional[str]
+    broker: Optional[str]
     created_at: datetime
     in_portfolio: bool = False

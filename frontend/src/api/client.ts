@@ -17,6 +17,7 @@ export interface Asset {
   image_url: string | null
   manual_price: boolean
   isin: string | null
+  broker: string | null
   created_at: string
   in_portfolio: boolean
 }
@@ -199,7 +200,7 @@ export const assetsApi = {
   list: () => api.get<Asset[]>('/assets').then(r => r.data),
   search: (q: string) => api.get<Asset[]>(`/assets/search?q=${encodeURIComponent(q)}`).then(r => r.data),
   create: (body: Omit<Asset, 'id' | 'created_at' | 'isin' | 'in_portfolio'> & { isin?: string | null }) => api.post<Asset>('/assets', body).then(r => r.data),
-  update: (id: number, body: { name?: string; ticker?: string; currency?: string; isin?: string | null; market_id?: number | null; manual_price?: boolean; image_url?: string | null }) =>
+  update: (id: number, body: { name?: string; ticker?: string; currency?: string; isin?: string | null; market_id?: number | null; manual_price?: boolean; image_url?: string | null; broker?: string | null }) =>
     api.put<Asset>(`/assets/${id}`, body).then(r => r.data),
   delete: (id: number) => api.delete(`/assets/${id}`),
   clearPrices: (id: number) => api.delete(`/assets/${id}/prices`),
