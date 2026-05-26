@@ -21,17 +21,27 @@ from datetime import date, timedelta
 from typing import Optional
 
 import duckdb
+import requests as _requests
 import yfinance as yf
 
 # mstarpy registers a SIGTERM handler at import time via signal.signal(), which only
 # works in the main thread. Import it here (module level = main thread at startup) so
 # that subsequent imports in FastAPI worker threads just get the cached module object.
-# Also force Chrome into headless mode via the env var mstarpy reads in browser_options().
 os.environ["SELENIUM_CHROME_FLAGS"] = "--no-sandbox --disable-dev-shm-usage --disable-gpu"
 try:
     import mstarpy as _mstarpy_preload  # noqa: F401
 except Exception:
     pass
+
+_MSTAR_DIRECT_SESSION = _requests.Session()
+_MSTAR_DIRECT_SESSION.headers.update({
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+})
 
 logger = logging.getLogger(__name__)
 
@@ -420,6 +430,24 @@ def _try_investpy(
         return 0
 
 
+def _parse_mstar_ids(text: str) -> tuple[Optional[str], Optional[str]]:
+    """Parse SecuritySearch.ashx response. Returns (perf_id, fund_id) or (None, None)."""
+    import json as _json
+    for line in text.splitlines():
+        parts = line.split("|")
+        if len(parts) < 2:
+            continue
+        try:
+            data = _json.loads(parts[1])
+            pi = data.get("pi")   # share-class performance ID (used by mstarpy.Funds)
+            fi = data.get("i")    # fund-level ID (used by tools.morningstar.es timeseries)
+            if pi or fi:
+                return pi, fi
+        except Exception:
+            continue
+    return None, None
+
+
 def _mstar_resolve_secid(session, isin: str) -> Optional[str]:
     """
     Use Morningstar's SecuritySearch API to resolve an ISIN to its exact performance ID.
@@ -430,7 +458,6 @@ def _mstar_resolve_secid(session, isin: str) -> Optional[str]:
     exact ISIN lookup and returns the correct performance ID.
     """
     try:
-        import json
         r = session.get(
             "https://www.morningstar.es/es/funds/SecuritySearch.ashx",
             params={"q": isin, "limit": 5, "lang": "es-ES"},
@@ -439,27 +466,94 @@ def _mstar_resolve_secid(session, isin: str) -> Optional[str]:
         )
         if not r.ok or not r.text:
             return None
-        # Response is a pipe-separated row: "Name|{json}|TYPE|..."
-        for line in r.text.splitlines():
-            parts = line.split("|")
-            if len(parts) < 2:
-                continue
-            try:
-                data = json.loads(parts[1])
-                pi = data.get("pi")
-                if pi:
-                    return pi
-            except (json.JSONDecodeError, IndexError):
-                continue
-        return None
+        pi, _ = _parse_mstar_ids(r.text)
+        return pi
     except Exception as e:
         logger.debug("_mstar_resolve_secid failed for %s: %s", isin, e)
         return None
 
 
+def _try_mstar_direct(
+    conn, asset_id: int, ticker: str, isin: Optional[str], currency: str,
+    start: date, end: date,
+) -> int:
+    """
+    Fetch fund NAV from tools.morningstar.es without any browser.
+
+    tools.morningstar.es/api/rest.svc/timeseries_price/{token}?id={fund_id}&...
+    accepts the fund-level ID (SecuritySearch 'i' field) and returns
+    [[epoch_ms, price], ...] with no auth required beyond the URL token.
+    """
+    if not isin:
+        return 0
+    try:
+        r = _MSTAR_DIRECT_SESSION.get(
+            "https://www.morningstar.es/es/funds/SecuritySearch.ashx",
+            params={"q": isin, "limit": 5, "lang": "es-ES"},
+            headers={"Accept": "application/json, text/javascript, */*"},
+            timeout=10,
+        )
+        _, fund_id = _parse_mstar_ids(r.text)
+    except Exception:
+        return 0
+    if not fund_id:
+        return 0
+
+    try:
+        r = _MSTAR_DIRECT_SESSION.get(
+            "https://tools.morningstar.es/api/rest.svc/timeseries_price/klr5zyak8x",
+            params={
+                "id": fund_id,
+                "currencyId": "EUR",
+                "idtype": "Morningstar",
+                "frequency": "daily",
+                "startDate": start.strftime("%Y-%m-%d"),
+                "endDate": end.strftime("%Y-%m-%d"),
+                "outputType": "COMPACTJSON",
+            },
+            headers={"Referer": "https://www.morningstar.es/"},
+            timeout=30,
+        )
+    except Exception:
+        return 0
+
+    if not r.ok:
+        return 0
+
+    try:
+        data = r.json()
+        if not data:
+            return 0
+    except Exception:
+        return 0
+
+    from datetime import datetime, timezone as _tz
+    count = 0
+    for entry in data:
+        if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+            continue
+        ts_ms = entry[0]
+        nav = entry[1]
+        if ts_ms is None or nav is None:
+            continue
+        price_date = datetime.fromtimestamp(ts_ms // 1000, tz=_tz.utc).date()
+        price_eur = _price_to_eur(conn, float(nav), currency, price_date)
+        _upsert_price(conn, asset_id, price_date, float(nav), currency, price_eur)
+        count += 1
+    if count:
+        logger.info("_try_mstar_direct: %d prices for %s", count, ticker)
+    return count
+
+
 def _try_mstarpy(
     conn, asset_id, ticker, isin: Optional[str], currency, start: date, end: date
 ) -> int:
+    # Try direct HTTP first — faster, no visible Chrome window
+    count = _try_mstar_direct(conn, asset_id, ticker, isin, currency, start, end)
+    if count > 0:
+        return count
+    logger.debug("_try_mstar_direct returned 0 for %s, falling back to mstarpy", ticker)
+
     from dateutil.parser import parse as parse_date
     import mstarpy
 

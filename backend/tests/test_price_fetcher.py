@@ -39,8 +39,10 @@ class TestTryMstarpy:
         mock_cls = _mock_funds_class("Amundi S&P 500 Screened INDEX AE Acc", "LU0996179007", nav_payload)
 
         _no_secid = "app.services.price_fetcher._mstar_resolve_secid"
+        _no_direct = "app.services.price_fetcher._try_mstar_direct"
         with patch.dict("sys.modules", {"mstarpy": MagicMock(Funds=mock_cls)}), \
-             patch(_no_secid, return_value=None):
+             patch(_no_secid, return_value=None), \
+             patch(_no_direct, return_value=0):
             count = _try_mstarpy(
                 conn, asset_id=999, ticker="LU0996179007",
                 isin="LU0996179007", currency="EUR",
@@ -81,8 +83,10 @@ class TestTryMstarpy:
         mock_cls = _mock_funds_class("Amundi IS MSCI World AE-C", "LU0996182563", [])
 
         _no_secid = "app.services.price_fetcher._mstar_resolve_secid"
+        _no_direct = "app.services.price_fetcher._try_mstar_direct"
         with patch.dict("sys.modules", {"mstarpy": MagicMock(Funds=mock_cls)}), \
-             patch(_no_secid, return_value=None):
+             patch(_no_secid, return_value=None), \
+             patch(_no_direct, return_value=0):
             _try_mstarpy(
                 conn, asset_id=997, ticker="AMIEAEC",
                 isin="LU0996182563", currency="EUR",
