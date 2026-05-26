@@ -452,27 +452,31 @@ def get_value_at_date(
 
     # Add balance asset snapshot values (unless filtering by a non-balance asset_type)
     if not type_list or 'balance' in type_list:
-        # broker filter skips balance assets (they have no broker)
-        if not broker_list:
-            if bal_direction == 'after':
-                snap_where = "AND date >= ?"
-                snap_order = "ASC"
-            else:
-                snap_where = "AND date <= ?"
-                snap_order = "DESC"
-            bal_row = conn.execute(f"""
-                SELECT COALESCE(SUM(be.amount_eur), 0)
-                FROM (
-                    SELECT DISTINCT ON (asset_id) asset_id, amount_eur
-                    FROM balance_entries
-                    WHERE type = 'snapshot' {snap_where}
-                    ORDER BY asset_id, date {snap_order}
-                ) be
-                JOIN assets a ON a.id = be.asset_id
-                WHERE a.type = 'balance'
-            """, [target_date]).fetchone()
-            bal_value = float(bal_row[0]) if bal_row and bal_row[0] is not None else 0.0
-            return tx_value + bal_value
+        if bal_direction == 'after':
+            snap_where = "AND date >= ?"
+            snap_order = "ASC"
+        else:
+            snap_where = "AND date <= ?"
+            snap_order = "DESC"
+        bal_broker_filter = ""
+        bal_broker_params: list = []
+        if broker_list:
+            placeholders = ", ".join("?" * len(broker_list))
+            bal_broker_filter = f"AND a.broker IN ({placeholders})"
+            bal_broker_params = list(broker_list)
+        bal_row = conn.execute(f"""
+            SELECT COALESCE(SUM(be.amount_eur), 0)
+            FROM (
+                SELECT DISTINCT ON (asset_id) asset_id, amount_eur
+                FROM balance_entries
+                WHERE type = 'snapshot' {snap_where}
+                ORDER BY asset_id, date {snap_order}
+            ) be
+            JOIN assets a ON a.id = be.asset_id
+            WHERE a.type = 'balance' {bal_broker_filter}
+        """, [target_date] + bal_broker_params).fetchone()
+        bal_value = float(bal_row[0]) if bal_row and bal_row[0] is not None else 0.0
+        return tx_value + bal_value
 
     return tx_value
 
@@ -990,9 +994,17 @@ def get_summary(
     balance_contrib = 0.0
     balance_gross_deposits = 0.0
     balance_gross_withdrawals = 0.0
-    if (not type_list or 'balance' in type_list) and not broker_list:
+    if not type_list or 'balance' in type_list:
+        # Build broker filter for balance asset SQL queries
+        bal_sum_broker_filter = ""
+        bal_sum_broker_params: list = []
+        if broker_list:
+            placeholders = ", ".join("?" * len(broker_list))
+            bal_sum_broker_filter = f"AND a.broker IN ({placeholders})"
+            bal_sum_broker_params = list(broker_list)
+
         # latest snapshot sum for balance assets up to effective_date_to
-        bv_row = conn.execute("""
+        bv_row = conn.execute(f"""
             SELECT COALESCE(SUM(be.amount_eur), 0)
             FROM (
                 SELECT DISTINCT ON (asset_id) asset_id, amount_eur
@@ -1001,11 +1013,11 @@ def get_summary(
                 ORDER BY asset_id, date DESC
             ) be
             JOIN assets a ON a.id = be.asset_id
-            WHERE a.type = 'balance'
-        """, [effective_date_to]).fetchone()
+            WHERE a.type = 'balance' {bal_sum_broker_filter}
+        """, [effective_date_to] + bal_sum_broker_params).fetchone()
         balance_value = float(bv_row[0]) if bv_row and bv_row[0] is not None else 0.0
 
-        bc_row = conn.execute("""
+        bc_row = conn.execute(f"""
             SELECT
                 COALESCE(SUM(CASE WHEN be.type='deposit' THEN be.amount_eur ELSE -be.amount_eur END), 0),
                 COALESCE(SUM(CASE WHEN be.type='deposit' THEN be.amount_eur ELSE 0 END), 0),
@@ -1013,8 +1025,8 @@ def get_summary(
             FROM balance_entries be
             JOIN assets a ON a.id = be.asset_id
             WHERE a.type = 'balance' AND be.type IN ('deposit', 'withdrawal')
-            AND be.date <= ?
-        """, [effective_date_to]).fetchone()
+            AND be.date <= ? {bal_sum_broker_filter}
+        """, [effective_date_to] + bal_sum_broker_params).fetchone()
         if bc_row:
             balance_contrib = float(bc_row[0]) if bc_row[0] is not None else 0.0
             balance_gross_deposits = float(bc_row[1]) if bc_row[1] is not None else 0.0
@@ -1078,11 +1090,18 @@ def get_summary(
         earl_params,
     ).fetchone()
     earl_bal_row = None
-    if (not type_list or 'balance' in type_list) and not broker_list:
-        earl_bal_row = conn.execute("""
+    if not type_list or 'balance' in type_list:
+        earl_bal_broker_filter = ""
+        earl_bal_broker_params: list = []
+        if broker_list:
+            placeholders = ", ".join("?" * len(broker_list))
+            earl_bal_broker_filter = f"AND a.broker IN ({placeholders})"
+            earl_bal_broker_params = list(broker_list)
+        earl_bal_row = conn.execute(f"""
             SELECT MIN(be.date) FROM balance_entries be
-            JOIN assets a ON a.id = be.asset_id WHERE a.type = 'balance'
-        """).fetchone()
+            JOIN assets a ON a.id = be.asset_id
+            WHERE a.type = 'balance' {earl_bal_broker_filter}
+        """, earl_bal_broker_params).fetchone()
     earl_tx_date = earl_tx_row[0] if earl_tx_row and earl_tx_row[0] else None
     earl_bal_date = earl_bal_row[0] if earl_bal_row and earl_bal_row[0] else None
     if isinstance(earl_tx_date, str):
@@ -1223,7 +1242,7 @@ def get_summary(
 
         # Add balance period gains (Modified Dietz numerator per balance asset)
         bal_cambio = 0.0
-        if (not type_list or 'balance' in type_list) and not broker_list:
+        if not type_list or 'balance' in type_list:
             bal_rows_for_cambio = _get_balance_holdings(
                 conn, effective_date_to, broker=broker, date_from=cambio_date_from
             )
