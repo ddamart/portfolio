@@ -698,7 +698,7 @@ def _compute_period_holding_data(
         WHERE date >= ?
         ORDER BY asset_id, date ASC
     )
-    SELECT h.asset_id, COALESCE(p.price_eur, 0.0) AS p_ini, h.q_ini
+    SELECT h.asset_id, p.price_eur AS p_ini, h.q_ini
     FROM holdings_at_ini h
     LEFT JOIN price_asof p ON p.asset_id = h.asset_id
     """, [date_from, date_from, date_from]).fetchall()
@@ -706,7 +706,7 @@ def _compute_period_holding_data(
     ini_by_asset: dict[int, dict] = {}
     for row in ini_rows:
         ini_by_asset[int(row[0])] = {
-            "p_ini": float(row[1]),
+            "p_ini": float(row[1]) if row[1] is not None else None,
             "q_ini": float(row[2]),
         }
 
@@ -739,11 +739,23 @@ def _compute_period_holding_data(
             }
             continue
 
-        ini   = ini_by_asset.get(asset_id, {"p_ini": 0.0, "q_ini": 0.0})
+        ini   = ini_by_asset.get(asset_id, {"p_ini": None, "q_ini": 0.0})
         q_ini = ini["q_ini"]
         p_ini = ini["p_ini"]
         q_now = h.total_shares
         p_now = h.current_price_eur
+
+        # No period-start price (e.g. stale fund NAV from before date_from): cambio = 0.
+        if q_ini > 0 and p_ini is None:
+            result[asset_id] = {
+                "period_start_value_eur": None,
+                "cambio_eur": 0.0,
+                "cambio_pct": None,
+            }
+            continue
+
+        if p_ini is None:
+            p_ini = 0.0  # q_ini == 0 path: p_ini unused
 
         buys        = period_buys.get(asset_id, {"buy_shares": 0.0, "buy_cost": 0.0})
         buy_shares  = buys["buy_shares"]
@@ -1186,9 +1198,9 @@ def get_summary(
                     WHEN COALESCE(hi.q_ini, 0) <= 0 THEN
                         h.q_now * COALESCE(pb.buy_cost / NULLIF(pb.buy_shares, 0), ac.avg_eur, pf.p_now)
                     WHEN h.q_now <= COALESCE(hi.q_ini, 0) THEN
-                        h.q_now * COALESCE(pi.p_ini, ac.avg_eur)
+                        h.q_now * COALESCE(pi.p_ini, pf.p_now)
                     ELSE
-                        COALESCE(hi.q_ini, 0) * COALESCE(pi.p_ini, ac.avg_eur)
+                        COALESCE(hi.q_ini, 0) * COALESCE(pi.p_ini, pf.p_now)
                         + (h.q_now - COALESCE(hi.q_ini, 0))
                           * COALESCE(pb.buy_cost / NULLIF(pb.buy_shares, 0), ac.avg_eur, pf.p_now)
                 END
