@@ -7,8 +7,8 @@ import {
 } from '@tanstack/react-table'
 import type { SortingState } from '@tanstack/react-table'
 import { useEffect, useMemo, useState } from 'react'
-import type { Asset, HoldingRow } from '../api/client'
-import { portfolioApi } from '../api/client'
+import type { Asset, HoldingRow, PremarketQuote } from '../api/client'
+import { portfolioApi, pricesApi } from '../api/client'
 import { useRefresh } from '../contexts/RefreshContext'
 import { formatCcy, formatEur, formatNumber, formatPct, pnlClass, pnlClassMuted } from '../utils/format'
 import { getPeriodParams } from '../utils/period'
@@ -54,6 +54,7 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
   const [manualPriceAsset, setManualPriceAsset] = useState<HoldingRow | null>(null)
   const [balanceDrawerAsset, setBalanceDrawerAsset] = useState<HoldingRow | null>(null)
   const [detailAsset, setDetailAsset] = useState<Asset | null>(null)
+  const [premarketMap, setPremarketMap] = useState<Record<number, PremarketQuote>>({})
   const { lastRefreshAt } = useRefresh()
 
   const regularHoldings = useMemo(() => holdings.filter(h => h.type !== 'balance'), [holdings])
@@ -72,6 +73,16 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
   }
 
   useEffect(() => { load() }, [period, dateFrom, dateTo, broker, assetType, lastRefreshAt])
+
+  useEffect(() => {
+    pricesApi.premarket()
+      .then(quotes => {
+        const map: Record<number, PremarketQuote> = {}
+        quotes.forEach(q => { map[q.asset_id] = q })
+        setPremarketMap(map)
+      })
+      .catch(() => {})
+  }, [lastRefreshAt])
 
   const holdingToAsset = (h: HoldingRow): Asset => ({
     id: h.asset_id, name: h.name, ticker: h.ticker,
@@ -144,12 +155,19 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
       header: 'P. Actual',
       cell: info => {
         const row = info.row.original
+        const pre = premarketMap[row.asset_id]
         if (row.current_price == null) return <span className="text-amber-500 text-xs" title="Sin datos de precio. Actualiza el precio desde Activos.">Sin precio</span>
         const isEur = row.currency === 'EUR'
         return (
           <div>
             <div>{formatNumber(row.current_price, 4)} {row.currency}</div>
             {!isEur && info.getValue() != null && <div className="text-xs text-gray-400">{formatEur(info.getValue()!)}</div>}
+            {pre && (
+              <div className={`text-xs mt-0.5 ${pnlClassMuted(pre.premarket_change_pct)}`}
+                title={`Premarket: ${formatNumber(pre.premarket_price, 4)} ${pre.currency}`}>
+                {pre.premarket_change_pct >= 0 ? '▲' : '▼'} {pre.premarket_change_pct >= 0 ? '+' : ''}{pre.premarket_change_pct.toFixed(2)}% pre
+              </div>
+            )}
           </div>
         )
       },
@@ -268,7 +286,7 @@ export function PortfolioTable({ period, dateFrom, dateTo, broker, assetType }: 
         </div>
       ),
     }),
-  ], [hasPeriod])
+  ], [hasPeriod, premarketMap])
 
   const table = useReactTable({
     data: regularHoldings,

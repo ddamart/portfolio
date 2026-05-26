@@ -234,12 +234,23 @@ export const portfolioApi = {
     api.get<RealizedSale[]>('/portfolio/realized-sales', { params }).then(r => r.data),
 }
 
+export interface PremarketQuote {
+  asset_id: number
+  ticker: string
+  currency: string
+  premarket_price: number
+  premarket_price_eur: number | null
+  premarket_change_pct: number
+  prev_close: number
+}
+
 export const pricesApi = {
   status: () => api.get<PriceStatus>('/prices/status').then(r => r.data),
   refresh: () => api.post('/prices/refresh').then(r => r.data),
   refreshAsset: (id: number) => api.post(`/prices/refresh/${id}`).then(r => r.data),
   fxRate: (currency: string, date: string) =>
     api.get<{ rate: number | null; found: boolean }>(`/prices/fx-rate?currency=${currency}&date=${date}`).then(r => r.data),
+  premarket: () => api.get<PremarketQuote[]>('/prices/premarket').then(r => r.data),
 }
 
 export interface ParsedTransaction {

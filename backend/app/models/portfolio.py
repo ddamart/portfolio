@@ -106,3 +106,13 @@ class PriceStatus(BaseModel):
     stale: bool
     refreshing: bool
     assets: list[PriceStatusAsset]
+
+
+class PremarketQuote(BaseModel):
+    asset_id: int
+    ticker: str
+    currency: str
+    premarket_price: float
+    premarket_price_eur: Optional[float]
+    premarket_change_pct: float
+    prev_close: float

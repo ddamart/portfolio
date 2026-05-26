@@ -1,7 +1,7 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from app.config import settings
 from app.database import get_db
-from app.models.portfolio import PriceStatus
+from app.models.portfolio import PremarketQuote, PriceStatus
 from app.services import price_fetcher
 from app.services.price_status import compute_price_status
 
@@ -24,6 +24,93 @@ def refresh_prices(background_tasks: BackgroundTasks):
     return {"ok": True, "message": "Price refresh started"}
 
 
+
+
+@router.get("/premarket", response_model=list[PremarketQuote])
+def premarket_prices():
+    """Live premarket quotes via 1-minute yfinance data filtered to before 09:30 ET.
+    Uses last stored DB price as previous-close reference. Only returns tickers
+    that have at least one premarket candle today."""
+    import yfinance as yf
+    import pandas as pd
+    import pytz
+    from datetime import date as date_
+    from app.services.currency import get_rate_to_eur
+
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT DISTINCT a.id, a.ticker, a.currency,
+               (SELECT price FROM prices WHERE asset_id = a.id ORDER BY date DESC LIMIT 1) AS last_price
+        FROM assets a
+        JOIN transactions t ON t.asset_id = a.id
+        WHERE a.type != 'balance' AND a.manual_price = false
+    """).fetchall()
+    if not rows:
+        return []
+
+    today = date_.today()
+    ticker_map: dict[str, tuple[int, str, float | None]] = {
+        r[1]: (r[0], r[2], float(r[3]) if r[3] is not None else None)
+        for r in rows
+    }
+    # Only US-listed tickers (no exchange suffix like .T, .HE, .L, .TO, .V) have
+    # a meaningful 4:00–9:30 ET premarket window. Non-US regular sessions overlap
+    # with the ET premarket hours and would produce misleading results.
+    tickers_list = [t for t in ticker_map if "." not in t]
+    if not tickers_list:
+        return []
+
+    try:
+        data = yf.download(
+            tickers_list, period="1d", interval="1m",
+            prepost=True, auto_adjust=True, progress=False,
+        )
+    except Exception:
+        return []
+
+    if data.empty:
+        return []
+
+    # Filter to pre-market window: candles strictly before 09:30 ET
+    et = pytz.timezone("America/New_York")
+    market_open = pd.Timestamp("today", tz=et).normalize() + pd.Timedelta(hours=9, minutes=30)
+    premarket_data = data[data.index < market_open]
+    if premarket_data.empty:
+        return []
+
+    last_row = premarket_data.iloc[-1]
+
+    result: list[PremarketQuote] = []
+    for ticker, (asset_id, currency, db_prev_close) in ticker_map.items():
+        try:
+            if len(tickers_list) == 1:
+                pre_price = float(last_row["Close"])
+            else:
+                pre_price = float(last_row[("Close", ticker)])
+            if pd.isna(pre_price):
+                continue
+            prev_close = db_prev_close
+            if prev_close is None or prev_close == 0:
+                continue
+            change_pct = (pre_price - prev_close) / prev_close * 100
+            try:
+                rate = get_rate_to_eur(conn, currency, today)
+                price_eur: float | None = pre_price * rate
+            except ValueError:
+                price_eur = None
+            result.append(PremarketQuote(
+                asset_id=asset_id,
+                ticker=ticker,
+                currency=currency,
+                premarket_price=pre_price,
+                premarket_price_eur=price_eur,
+                premarket_change_pct=change_pct,
+                prev_close=prev_close,
+            ))
+        except Exception:
+            continue
+
+    return result
 
 
 @router.get("/fx-rate")
