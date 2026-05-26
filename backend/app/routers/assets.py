@@ -309,13 +309,16 @@ def update_asset(asset_id: int, body: AssetUpdate):
         "id, asset_id, type, broker, shares, price, price_eur, currency, "
         "commission, commission_currency, commission_eur, date, notes, created_at, updated_at"
     )
-    tx_rows    = conn.execute(f"SELECT {_TX_COLS} FROM transactions WHERE asset_id = ?", [asset_id]).fetchall()
-    price_rows = conn.execute(
+    _BE_COLS = "id, asset_id, date, type, amount_eur, notes, created_at"
+    tx_rows      = conn.execute(f"SELECT {_TX_COLS} FROM transactions   WHERE asset_id = ?", [asset_id]).fetchall()
+    price_rows   = conn.execute(
         "SELECT asset_id, date, price, currency, price_eur FROM prices WHERE asset_id = ?", [asset_id]
     ).fetchall()
+    balance_rows = conn.execute(f"SELECT {_BE_COLS} FROM balance_entries WHERE asset_id = ?", [asset_id]).fetchall()
 
-    conn.execute("DELETE FROM transactions WHERE asset_id = ?", [asset_id])
-    conn.execute("DELETE FROM prices       WHERE asset_id = ?", [asset_id])
+    conn.execute("DELETE FROM transactions   WHERE asset_id = ?", [asset_id])
+    conn.execute("DELETE FROM prices         WHERE asset_id = ?", [asset_id])
+    conn.execute("DELETE FROM balance_entries WHERE asset_id = ?", [asset_id])
 
     set_clause = ", ".join(f"{k} = ?" for k in updates)
     conn.execute(
@@ -331,6 +334,11 @@ def update_asset(asset_id: int, body: AssetUpdate):
     for row in price_rows:
         conn.execute(
             "INSERT INTO prices (asset_id, date, price, currency, price_eur) VALUES (?,?,?,?,?)",
+            list(row),
+        )
+    for row in balance_rows:
+        conn.execute(
+            f"INSERT INTO balance_entries ({_BE_COLS}) VALUES (?,?,?,?,?,?,?)",
             list(row),
         )
 
