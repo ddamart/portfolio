@@ -678,11 +678,12 @@ def _compute_period_holding_data(
       - Q_now > Q_ini → reference = Q_ini × P_ini + (Q_now − Q_ini) × period_avg_buy
     This prevents showing gains from before the position was opened.
     """
-    # Extend date_from back if there are <2 price dates in the period so the
-    # reference price matches the chart's leftmost point (e.g. 1D on Monday).
-    date_from = _adjust_sparse_date_from(conn, date_from, date_to)
-
-    # Q_ini (shares at date_from) + P_ini (price at date_from) per asset
+    # Q_ini (shares at date_from) + P_ini (price at date_from) per asset.
+    # Backward ASOF (date <= date_from, latest first) handles per-asset holiday
+    # calendars correctly: a US stock on a US holiday falls back to Friday's close
+    # while a European stock on the same day uses its own Monday price.
+    # A global sparse-date adjustment is NOT used here because it would incorrectly
+    # skip the adjustment when any non-US asset has a price on a US-only holiday.
     ini_rows = conn.execute("""
     WITH holdings_at_ini AS (
         SELECT asset_id,
@@ -696,16 +697,14 @@ def _compute_period_holding_data(
         GROUP BY asset_id
     ),
     price_asof AS (
-        -- Forward ASOF: first available price ON OR AFTER date_from.
-        -- This aligns with the chart's first visible data point, so Cambio %
-        -- reflects exactly what the user sees on screen (no invisible pre-period price).
-        -- For normal trading days (price exists on date_from) the result is identical
-        -- to a backward ASOF; only differs when date_from falls on a weekend/holiday.
+        -- Backward ASOF: last available price ON OR BEFORE date_from.
+        -- This is per-asset: a US stock on a US holiday falls back to its own
+        -- last trading day; a Swedish stock finds its price for that same day.
         SELECT DISTINCT ON (asset_id)
             asset_id, price_eur::DOUBLE AS price_eur
         FROM prices
-        WHERE date >= ?
-        ORDER BY asset_id, date ASC
+        WHERE date <= ?
+        ORDER BY asset_id, date DESC
     )
     SELECT h.asset_id, p.price_eur AS p_ini, h.q_ini
     FROM holdings_at_ini h
@@ -1202,10 +1201,11 @@ def get_summary(
             ORDER BY asset_id, date DESC
         ),
         price_initial AS (
-            -- Forward ASOF: first price on or after date_from (matches chart first point)
+            -- Backward ASOF: last price on or before date_from, per asset.
+            -- Handles per-asset holiday calendars (e.g. US holiday vs EU trading day).
             SELECT DISTINCT ON (asset_id) asset_id, price_eur::DOUBLE AS p_ini
-            FROM prices WHERE date >= ?
-            ORDER BY asset_id, date ASC
+            FROM prices WHERE date <= ?
+            ORDER BY asset_id, date DESC
         ),
         avg_cost AS (
             SELECT t.asset_id,
