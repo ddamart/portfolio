@@ -342,6 +342,44 @@ class TestRealizedPnL:
         for s in sells:
             assert abs(s["cost_basis_eur"] - 100.0) < 0.01
 
+    def test_buy_commission_folded_into_avco(self, client):
+        """Buy commission is spread across acquired shares in the AVCO.
+        Buy 10 @ 100 + 2€ commission → AVCO = 100.2. Sell 5 @ 120 + 1€ sell commission.
+        Gain = 5 × (120 − 100.2) − 1 = 98."""
+        asset = create_asset(client, currency="EUR")
+        client.post("/api/transactions", json={
+            "asset_id": asset["id"], "type": "buy", "broker": "degiro",
+            "shares": 10, "price": 100.0, "currency": "EUR",
+            "commission": 2.0, "date": "2024-01-01",
+        })
+        client.post("/api/transactions", json={
+            "asset_id": asset["id"], "type": "sell", "broker": "degiro",
+            "shares": 5, "price": 120.0, "currency": "EUR",
+            "commission": 1.0, "date": "2024-06-01",
+        })
+        sell = next(t for t in client.get("/api/transactions").json() if t["type"] == "sell")
+        assert abs(sell["cost_basis_eur"] - 100.2) < 0.01
+        assert abs(sell["realized_pnl_eur"] - 98.0) < 0.01
+
+    def test_buy_commission_proportional_on_partial_sell(self, client):
+        """Partial sell: buy commission is proportionally absorbed via AVCO.
+        Buy 10 @ 100 + 10€ commission → AVCO = 101. Sell 5 @ 115 (no sell commission).
+        Gain = 5 × (115 − 101) = 70 — exactly half the buy commission allocated."""
+        asset = create_asset(client, currency="EUR")
+        client.post("/api/transactions", json={
+            "asset_id": asset["id"], "type": "buy", "broker": "degiro",
+            "shares": 10, "price": 100.0, "currency": "EUR",
+            "commission": 10.0, "date": "2024-01-01",
+        })
+        client.post("/api/transactions", json={
+            "asset_id": asset["id"], "type": "sell", "broker": "degiro",
+            "shares": 5, "price": 115.0, "currency": "EUR",
+            "commission": 0, "date": "2024-06-01",
+        })
+        sell = next(t for t in client.get("/api/transactions").json() if t["type"] == "sell")
+        assert abs(sell["cost_basis_eur"] - 101.0) < 0.01
+        assert abs(sell["realized_pnl_eur"] - 70.0) < 0.01
+
 
 class TestDeleteTransaction:
     def test_delete_returns_204(self, client):

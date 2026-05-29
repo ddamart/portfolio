@@ -787,3 +787,26 @@ class TestRealizedSalesEndpoint:
         sales = r.json()
         assert len(sales) == 1
         assert sales[0]["realized_pnl_eur"] == pytest.approx(200.0, abs=1.0)  # 5×(140−100)
+
+    def test_buy_commission_folded_into_avco_for_realized_sales(self, client):
+        """Buy commission is included in AVCO for the realized-sales endpoint.
+        Buy 10 @ 100 + 5€ commission → AVCO = 100.5. Sell 10 @ 130 + 2€ sell commission.
+        Gain = 10 × (130 − 100.5) − 2 = 293."""
+        asset = create_asset(client, ticker="RSCOMM", currency="EUR")
+        client.post("/api/transactions", json={
+            "asset_id": asset["id"], "type": "buy", "broker": "degiro",
+            "shares": 10, "price": 100.0, "currency": "EUR",
+            "commission": 5.0, "date": "2024-01-02",
+        })
+        client.post("/api/transactions", json={
+            "asset_id": asset["id"], "type": "sell", "broker": "degiro",
+            "shares": 10, "price": 130.0, "currency": "EUR",
+            "commission": 2.0, "date": "2024-06-01",
+        })
+        r = client.get("/api/portfolio/realized-sales")
+        assert r.status_code == 200
+        sales = r.json()
+        assert len(sales) == 1
+        assert sales[0]["cost_basis_eur"] == pytest.approx(100.5, abs=0.01)
+        assert sales[0]["realized_pnl_eur"] == pytest.approx(293.0, abs=0.5)
+        assert sales[0]["realized_pnl_pct"] == pytest.approx(293.0 / 1005.0 * 100, abs=0.5)

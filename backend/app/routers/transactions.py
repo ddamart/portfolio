@@ -82,7 +82,7 @@ def list_transactions(
     WITH avco AS (
         SELECT
             id,
-            SUM(CASE WHEN type='buy' THEN shares * price_eur ELSE 0 END) OVER (
+            SUM(CASE WHEN type='buy' THEN shares * price_eur + commission_eur ELSE 0 END) OVER (
                 PARTITION BY asset_id ORDER BY date, id
                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
             ) /

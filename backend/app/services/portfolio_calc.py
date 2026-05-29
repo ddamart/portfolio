@@ -630,7 +630,7 @@ def get_realized_sales(
 
         if tx_type == "buy":
             total_shares = cur_shares + shares
-            avg_costs[asset_id] = (cur_shares * cur_avg + shares * price_eur) / total_shares
+            avg_costs[asset_id] = (cur_shares * cur_avg + shares * price_eur + commission_eur) / total_shares
             shares_held[asset_id] = total_shares
         else:
             shares_held[asset_id] = max(cur_shares - shares, 0.0)
