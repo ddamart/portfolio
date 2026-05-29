@@ -6,7 +6,7 @@ import {
   useReactTable,
 } from '@tanstack/react-table'
 import type { SortingState } from '@tanstack/react-table'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import toast from 'react-hot-toast'
 import type { Transaction } from '../api/client'
 import { transactionsApi } from '../api/client'
@@ -55,6 +55,109 @@ function FilterPills({
   )
 }
 
+interface AssetOption { id: number; name: string; ticker: string }
+
+function AssetFilter({
+  assets, values, onChange,
+}: {
+  assets: AssetOption[]
+  values: number[]
+  onChange: (ids: number[]) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  const visible = useMemo(() => {
+    const q = search.toLowerCase()
+    return q
+      ? assets.filter(a => a.name.toLowerCase().includes(q) || a.ticker.toLowerCase().includes(q))
+      : assets
+  }, [assets, search])
+
+  const toggle = (id: number) =>
+    onChange(values.includes(id) ? values.filter(x => x !== id) : [...values, id])
+
+  const active = values.length > 0
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border font-medium transition-colors ${
+          active
+            ? 'bg-blue-600 border-blue-600 text-white'
+            : 'border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400 hover:border-gray-400 dark:hover:border-gray-500'
+        }`}
+      >
+        <span>Activo</span>
+        {active && (
+          <span className="bg-white/25 rounded-full px-1.5 py-0 leading-4 text-[10px]">
+            {values.length}
+          </span>
+        )}
+      </button>
+
+      {open && (
+        <div className="absolute top-full left-0 mt-1.5 z-20 w-64 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl shadow-lg overflow-hidden">
+          <div className="p-2 border-b border-gray-100 dark:border-gray-700">
+            <input
+              autoFocus
+              type="text"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Buscar activo..."
+              className="w-full text-xs px-2.5 py-1.5 rounded-lg bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 text-gray-800 dark:text-gray-100 placeholder-gray-400 outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
+          <div className="max-h-60 overflow-y-auto">
+            {visible.length === 0 ? (
+              <p className="text-xs text-gray-400 text-center py-4">Sin resultados</p>
+            ) : (
+              visible.map(a => (
+                <label
+                  key={a.id}
+                  className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={values.includes(a.id)}
+                    onChange={() => toggle(a.id)}
+                    className="accent-blue-600"
+                  />
+                  <div className="min-w-0">
+                    <span className="block text-xs font-medium text-gray-800 dark:text-gray-100 truncate">{a.name}</span>
+                    <span className="block text-[10px] font-mono text-gray-400">{a.ticker}</span>
+                  </div>
+                </label>
+              ))
+            )}
+          </div>
+          {active && (
+            <div className="p-2 border-t border-gray-100 dark:border-gray-700">
+              <button
+                onClick={() => { onChange([]); setOpen(false) }}
+                className="w-full text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+              >
+                Limpiar selección
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 const col = createColumnHelper<Transaction>()
 
 export function TransactionTable() {
@@ -67,9 +170,10 @@ export function TransactionTable() {
   const [editTx, setEditTx] = useState<Transaction | null>(null)
   const [showAdd, setShowAdd] = useState(false)
   const [deletingId, setDeletingId] = useState<number | null>(null)
-  const [filterTypes, setFilterTypes]   = useState<string[]>([])
-  const [filterOps, setFilterOps]       = useState<string[]>([])
+  const [filterTypes, setFilterTypes]     = useState<string[]>([])
+  const [filterOps, setFilterOps]         = useState<string[]>([])
   const [filterBrokers, setFilterBrokers] = useState<string[]>([])
+  const [filterAssets, setFilterAssets]   = useState<number[]>([])
 
   const load = useCallback(() => {
     setLoading(true)
@@ -237,13 +341,26 @@ export function TransactionTable() {
     [transactions]
   )
 
+  const assetOptions = useMemo<AssetOption[]>(() => {
+    const seen = new Set<number>()
+    const opts: AssetOption[] = []
+    for (const t of transactions) {
+      if (!seen.has(t.asset_id)) {
+        seen.add(t.asset_id)
+        opts.push({ id: t.asset_id, name: t.asset_name, ticker: t.asset_ticker })
+      }
+    }
+    return opts.sort((a, b) => a.name.localeCompare(b.name))
+  }, [transactions])
+
   const filtered = useMemo(
     () => transactions.filter(t =>
       (filterTypes.length === 0   || filterTypes.includes(t.asset_type)) &&
       (filterOps.length === 0     || filterOps.includes(t.type)) &&
-      (filterBrokers.length === 0 || filterBrokers.includes(t.broker))
+      (filterBrokers.length === 0 || filterBrokers.includes(t.broker)) &&
+      (filterAssets.length === 0  || filterAssets.includes(t.asset_id))
     ),
-    [transactions, filterTypes, filterOps, filterBrokers]
+    [transactions, filterTypes, filterOps, filterBrokers, filterAssets]
   )
 
   const table = useReactTable({
@@ -302,9 +419,14 @@ export function TransactionTable() {
           onChange={setFilterBrokers}
           options={activeBrokers.map(b => ({ value: b, label: BROKER_LABELS[b] ?? b }))}
         />
-        {(filterTypes.length > 0 || filterOps.length > 0 || filterBrokers.length > 0) && (
+        <AssetFilter
+          assets={assetOptions}
+          values={filterAssets}
+          onChange={setFilterAssets}
+        />
+        {(filterTypes.length > 0 || filterOps.length > 0 || filterBrokers.length > 0 || filterAssets.length > 0) && (
           <button
-            onClick={() => { setFilterTypes([]); setFilterOps([]); setFilterBrokers([]) }}
+            onClick={() => { setFilterTypes([]); setFilterOps([]); setFilterBrokers([]); setFilterAssets([]) }}
             className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 underline ml-auto"
           >
             Limpiar filtros
