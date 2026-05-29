@@ -72,11 +72,15 @@ class _ImportItem(BaseModel):
 
 
 @router.post("/{asset_id}/import")
-def import_entries(asset_id: int, body: list[_ImportItem], replace: bool = True):
+def import_entries(asset_id: int, body: list[_ImportItem], replace: bool = False):
     """Bulk-import balance entries.
 
-    With replace=true (default) all existing entries of the same type(s) are
-    deleted before insertion — safe to re-run when Openbank data is refreshed.
+    replace=false (default): upsert — delete any existing entry for the same
+    (asset_id, date, type) before inserting. Manually entered entries for
+    dates not present in the import body are left untouched.
+
+    replace=true: delete ALL existing entries of the same type(s) for this
+    asset first, then insert. Use when you want a full reset.
     """
     import datetime as _dt
 
@@ -97,6 +101,12 @@ def import_entries(asset_id: int, body: list[_ImportItem], replace: bool = True)
     for item in body:
         try:
             d = _dt.date.fromisoformat(item.date)
+            if not replace:
+                # Upsert: remove any existing entry for this exact (date, type)
+                conn.execute(
+                    "DELETE FROM balance_entries WHERE asset_id = ? AND date = ? AND type = ?",
+                    [asset_id, d, item.type],
+                )
             conn.execute(
                 "INSERT INTO balance_entries (id, asset_id, date, type, amount_eur, notes) "
                 "VALUES (nextval('balance_entries_id_seq'), ?, ?, ?, ?, NULL)",

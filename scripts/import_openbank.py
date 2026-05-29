@@ -6,6 +6,17 @@ Usage:
     python scripts/import_openbank.py response.json --asset-id 61
     python scripts/import_openbank.py response.json --asset-id 61 --dry-run
     python scripts/import_openbank.py response.json --asset-id 61 --import-deposits
+    python scripts/import_openbank.py response.json --asset-id 61 --reset-valuations
+
+Default behaviour (upsert):
+    Inserts each valuation for its date. If a snapshot already exists for that
+    date it is overwritten. Snapshots for dates NOT present in the JSON are left
+    untouched — useful for incremental daily updates.
+
+With --reset-valuations:
+    Deletes ALL existing snapshots (and deposits/withdrawals when combined with
+    --import-deposits) for the asset before importing. Use when you want a clean
+    slate, e.g. after correcting historical data.
 
 Deposit detection:
     The Openbank API returns a timeWeightedReturn (TWR) that measures investment
@@ -81,6 +92,9 @@ def main() -> None:
     ap.add_argument("--dry-run", action="store_true", help="Print plan without posting to API")
     ap.add_argument("--import-deposits", action="store_true",
                     help="Also import detected deposits (skipped by default; use if starting fresh)")
+    ap.add_argument("--reset-valuations", action="store_true",
+                    help="Delete ALL existing snapshots (and deposits when --import-deposits is set) "
+                         "before importing. Default upserts per date, leaving other dates untouched.")
     args = ap.parse_args()
 
     with open(args.file, encoding="utf-8") as f:
@@ -109,10 +123,13 @@ def main() -> None:
         return
 
     base = args.base_url.rstrip("/")
+    replace_param = "true" if args.reset_valuations else "false"
 
-    # Always import snapshots (replace=true wipes and rewrites all snapshot entries)
+    mode_label = "RESET (wipe + reinsert)" if args.reset_valuations else "UPSERT (overwrite per date)"
+    print(f"\nImport mode: {mode_label}")
+
     print(f"\nPosting {len(snapshots)} snapshots to asset {args.asset_id}...")
-    r = requests.post(f"{base}/api/balance/{args.asset_id}/import?replace=true", json=snapshots, timeout=30)
+    r = requests.post(f"{base}/api/balance/{args.asset_id}/import?replace={replace_param}", json=snapshots, timeout=30)
     r.raise_for_status()
     res = r.json()
     print(f"  OK inserted={res['inserted']}  errors={len(res['errors'])}")
@@ -121,7 +138,7 @@ def main() -> None:
 
     if args.import_deposits:
         print(f"\nPosting {len(deposits)} detected deposits...")
-        r = requests.post(f"{base}/api/balance/{args.asset_id}/import?replace=true", json=deposits, timeout=30)
+        r = requests.post(f"{base}/api/balance/{args.asset_id}/import?replace={replace_param}", json=deposits, timeout=30)
         r.raise_for_status()
         res = r.json()
         print(f"  OK inserted={res['inserted']}  errors={len(res['errors'])}")
