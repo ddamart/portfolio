@@ -486,12 +486,15 @@ def _try_mstar_direct(
     if not isin:
         return 0
 
+    # Use the fund's native currency so prices are returned in their true denomination.
+    # GBX (pence) is not a valid Morningstar currencyId — use GBP instead (÷100 happens in _price_to_eur).
+    ms_currency = "GBP" if currency == "GBX" else currency
     try:
         r = _MSTAR_DIRECT_SESSION.get(
             "https://tools.morningstar.es/api/rest.svc/timeseries_price/klr5zyak8x",
             params={
                 "id": isin,
-                "currencyId": "EUR",
+                "currencyId": ms_currency,
                 "idtype": "ISIN",
                 "frequency": "daily",
                 "startDate": start.strftime("%Y-%m-%d"),
