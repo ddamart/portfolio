@@ -575,19 +575,20 @@ def _try_mstarpy(
 
             fund = mstarpy.Funds(term=search_term, pageSize=1, session=session)
 
-            # Sanity-check: the found fund's ISIN must match what we asked for
+            # Sanity-check: the found fund's ISIN must match what we asked for.
+            # Use fund.isin (set from the screener result) — it's more reliable than
+            # metaData() which uses the internal securityID and can return a sibling
+            # share class's ISIN rather than the one we actually searched for.
             if isin:
-                try:
-                    meta = fund.metaData()
-                    found_isin = meta.get("isin")
-                    if found_isin and found_isin != isin:
-                        logger.warning(
-                            "mstarpy ISIN mismatch for %s: searched %s, got %s — skipping",
-                            ticker, isin, found_isin,
-                        )
-                        return 0
-                except Exception:
-                    pass
+                screener_isin = getattr(fund, "isin", None)
+                # fund.isin falls back to fund.code when the screener has no isin field;
+                # in that case skip the check (no reliable ISIN to compare against).
+                if screener_isin and screener_isin != getattr(fund, "code", None) and screener_isin != isin:
+                    logger.warning(
+                        "mstarpy ISIN mismatch for %s: searched %s, got %s — skipping",
+                        ticker, isin, screener_isin,
+                    )
+                    return 0
 
             hist = fund.nav(start_date=start, end_date=end)
             if not hist:
