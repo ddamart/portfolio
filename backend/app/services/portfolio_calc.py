@@ -1296,6 +1296,73 @@ def get_summary(
     )
 
 
+def _build_realized_step_series(
+    conn: duckdb.DuckDBPyConnection,
+    broker: Optional[str] = None,
+    asset_type: Optional[str] = None,
+) -> tuple[list[date], list[float]]:
+    """
+    Return (dates, cumulative_realized_pnl) sorted ascending.
+
+    Each entry is the total realized P&L (net of buy and sell commissions, using
+    commission-inclusive AVCO) accumulated up to and including that date.
+    Forward-fill by binary search: the value is flat between sell events.
+    """
+    asset_join = ""
+    filters = ""
+    params: list = []
+
+    type_list = _parse_filter_list(asset_type)
+    broker_list = _parse_filter_list(broker)
+    if type_list:
+        asset_join = "JOIN assets a ON a.id = t.asset_id"
+        filters += " " + _in_clause("a.type", type_list, params)
+    if broker_list:
+        filters += " " + _in_clause("t.broker", broker_list, params)
+
+    rows = conn.execute(f"""
+        SELECT t.asset_id, t.type, t.shares, t.price_eur, t.commission_eur, t.date
+        FROM transactions t
+        {asset_join}
+        WHERE 1=1 {filters}
+        ORDER BY t.date, t.id
+    """, params).fetchall()
+
+    def _to_date(v) -> date:
+        return v if isinstance(v, date) else v.date()
+
+    avg_costs: dict[int, float] = {}
+    shares_held: dict[int, float] = {}
+    cumulative = 0.0
+    step_dates: list[date] = []
+    step_values: list[float] = []
+
+    i = 0
+    while i < len(rows):
+        day = _to_date(rows[i][5])
+        day_gain = 0.0
+        while i < len(rows) and _to_date(rows[i][5]) == day:
+            asset_id, tx_type, shares, price_eur, commission_eur, _ = rows[i]
+            shares = float(shares)
+            price_eur = float(price_eur)
+            commission_eur = float(commission_eur)
+            cur = shares_held.get(asset_id, 0.0)
+            avg = avg_costs.get(asset_id, 0.0)
+            if tx_type == "buy":
+                new_total = cur + shares
+                avg_costs[asset_id] = (cur * avg + shares * price_eur + commission_eur) / new_total
+                shares_held[asset_id] = new_total
+            else:
+                day_gain += shares * (price_eur - avg) - commission_eur
+                shares_held[asset_id] = max(cur - shares, 0.0)
+            i += 1
+        cumulative += day_gain
+        step_dates.append(day)
+        step_values.append(cumulative)
+
+    return step_dates, step_values
+
+
 def _build_invested_step_series(
     conn: duckdb.DuckDBPyConnection,
     broker: Optional[str] = None,
@@ -1472,6 +1539,16 @@ def get_chart_data(
         idx = bisect.bisect_right(step_dates, d) - 1
         return step_values[idx] if idx >= 0 else None
 
+    # Build cumulative realized P&L step series and forward-fill onto chart dates
+    real_dates, real_values = _build_realized_step_series(conn, broker=broker, asset_type=asset_type)
+
+    def _realized_at(chart_date) -> float:
+        if not real_dates:
+            return 0.0
+        d = chart_date if isinstance(chart_date, date) else chart_date.date()
+        idx = bisect.bisect_right(real_dates, d) - 1
+        return real_values[idx] if idx >= 0 else 0.0
+
     # Add balance asset values if not filtered to non-balance types (and no broker filter)
     balance_by_date: dict[date, tuple[float, float]] = {}  # date → (value_eur, net_contrib_eur)
     if (not type_list or 'balance' in type_list) and not broker_list:
@@ -1482,6 +1559,7 @@ def get_chart_data(
         chart_date = row[0]
         value_eur = float(row[1])
         invested_eur = _invested_at(chart_date)
+        cumulative_realized_eur = _realized_at(chart_date) or None  # omit zero before any sell
 
         if balance_by_date:
             bal_value, bal_contrib = balance_by_date.get(chart_date, (0.0, 0.0))
@@ -1491,7 +1569,12 @@ def get_chart_data(
             elif bal_contrib > 0:
                 invested_eur = bal_contrib
 
-        chart.append(ChartPoint(date=chart_date, value_eur=value_eur, invested_eur=invested_eur))
+        chart.append(ChartPoint(
+            date=chart_date,
+            value_eur=value_eur,
+            invested_eur=invested_eur,
+            cumulative_realized_eur=cumulative_realized_eur,
+        ))
     return chart
 
 

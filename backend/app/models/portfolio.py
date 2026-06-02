@@ -92,6 +92,7 @@ class ChartPoint(BaseModel):
     date: date
     value_eur: float
     invested_eur: Optional[float] = None
+    cumulative_realized_eur: Optional[float] = None
 
 
 class PriceStatusAsset(BaseModel):

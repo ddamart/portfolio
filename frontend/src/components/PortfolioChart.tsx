@@ -51,9 +51,10 @@ export function PortfolioChart({ period, dateFrom, dateTo, onRangeSelect, broker
 
   const displayData = useMemo(() => {
     return data.map(d => {
-      if (viewMode === 'value') return { ...d, display_y: d.value_eur }
+      const equity = d.value_eur + (d.cumulative_realized_eur ?? 0)
+      if (viewMode === 'value') return { ...d, display_y: equity }
       if (d.invested_eur == null) return { ...d, display_y: null as number | null }
-      const pnl = d.value_eur - d.invested_eur
+      const pnl = equity - d.invested_eur
       if (viewMode === 'pnl') return { ...d, display_y: pnl }
       const pct = d.invested_eur > 0 ? (pnl / d.invested_eur) * 100 : 0
       return { ...d, display_y: pct }
@@ -95,12 +96,12 @@ export function PortfolioChart({ period, dateFrom, dateTo, onRangeSelect, broker
   const lastY = displayData.length >= 2 ? displayData[displayData.length - 1].display_y : null
   const firstY = displayData.length >= 2 ? displayData[0].display_y : null
 
-  // For "Valor" mode: color = green if value > invested (same criterion as G/P).
+  // For "Valor" mode: color = green if equity (value + realized) > invested.
   // For G/P modes: color = green if gain is positive.
   const lastPoint = data.length > 0 ? data[data.length - 1] : null
   const isPositive = viewMode === 'value'
     ? (lastPoint != null && lastPoint.invested_eur != null
-        ? lastPoint.value_eur >= lastPoint.invested_eur
+        ? (lastPoint.value_eur + (lastPoint.cumulative_realized_eur ?? 0)) >= lastPoint.invested_eur
         : lastY != null && firstY != null ? lastY >= firstY : true)
     : (lastY != null ? lastY >= 0 : true)
   const valueColor = isPositive ? '#22c55e' : '#ef4444'

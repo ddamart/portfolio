@@ -156,6 +156,7 @@ export interface ChartPoint {
   date: string
   value_eur: number
   invested_eur?: number
+  cumulative_realized_eur?: number
 }
 
 export interface PriceStatus {

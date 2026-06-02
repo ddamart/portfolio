@@ -378,6 +378,93 @@ class TestChartPriceFillForward:
         )
 
 
+class TestChartCumulativeRealized:
+    """cumulative_realized_eur on chart points: equity curve never drops on profitable sells."""
+
+    def test_no_sells_cumulative_realized_is_none(self, client):
+        """Before any sell, cumulative_realized_eur is None (omitted)."""
+        asset = create_asset(client, ticker="NOSEL", currency="EUR")
+        create_buy(client, asset["id"], shares=10, price=100.0, currency="EUR",
+                   date="2024-01-02", broker="degiro")
+        seed_price(asset["id"], "2024-01-02", 110.0)
+        data = client.get("/api/portfolio/chart?period=all").json()
+        assert len(data) >= 1
+        assert data[0].get("cumulative_realized_eur") is None
+
+    def test_sell_at_gain_appears_in_cumulative_realized(self, client):
+        """Partial sell: buy 10 @ 100 + 2€ commission, sell 5 @ 130 + 1€ commission.
+        AVCO = 100.2. Realized = 5 × (130 − 100.2) − 1 = 148.
+        The chart point on the sell date (5 shares still held) carries cumulative_realized_eur ≈ 148."""
+        asset = create_asset(client, ticker="SELLGAIN", currency="EUR")
+        client.post("/api/transactions", json={
+            "asset_id": asset["id"], "type": "buy", "broker": "degiro",
+            "shares": 10, "price": 100.0, "currency": "EUR",
+            "commission": 2.0, "date": "2024-01-02",
+        })
+        client.post("/api/transactions", json={
+            "asset_id": asset["id"], "type": "sell", "broker": "degiro",
+            "shares": 5, "price": 130.0, "currency": "EUR",
+            "commission": 1.0, "date": "2024-06-01",
+        })
+        seed_price(asset["id"], "2024-01-02", 100.0)
+        seed_price(asset["id"], "2024-06-01", 130.0)
+        data = client.get("/api/portfolio/chart?period=all").json()
+        sell_point = next((d for d in data if d["date"] == "2024-06-01"), None)
+        assert sell_point is not None
+        assert sell_point["cumulative_realized_eur"] == pytest.approx(148.0, abs=0.5)
+
+    def test_equity_curve_better_than_raw_value_after_sell(self, client):
+        """After a profitable partial sell raw value_eur drops, but equity curve
+        (value + realized) shows a smaller drop — the realized gain is preserved.
+
+        Scenario: hold asset A (10 shares) + asset B (5 shares).
+        Sell all of A at a €200 gain. Chart on sell date only shows B (value = 250),
+        but equity = 250 + 200 = 450 vs raw value = 250."""
+        a = create_asset(client, ticker="EQSELL_A", currency="EUR")
+        b = create_asset(client, ticker="EQSELL_B", currency="EUR")
+        create_buy(client, a["id"], shares=10, price=100.0, currency="EUR",
+                   date="2024-01-02", broker="degiro")
+        create_buy(client, b["id"], shares=5, price=50.0, currency="EUR",
+                   date="2024-01-02", broker="degiro")
+        client.post("/api/transactions", json={
+            "asset_id": a["id"], "type": "sell", "broker": "degiro",
+            "shares": 10, "price": 120.0, "currency": "EUR",
+            "commission": 0, "date": "2024-06-01",
+        })
+        seed_price(a["id"], "2024-01-02", 100.0)
+        seed_price(b["id"], "2024-01-02", 50.0)
+        seed_price(b["id"], "2024-06-01", 50.0)  # B still held on sell date
+        data = client.get("/api/portfolio/chart?period=all").json()
+        sell_point = next((d for d in data if d["date"] == "2024-06-01"), None)
+        assert sell_point is not None
+        # Raw value = only B remaining = 5 × 50 = 250
+        assert sell_point["value_eur"] == pytest.approx(250.0, abs=1.0)
+        # Realized gain from selling A = 10 × (120 − 100) = 200
+        realized = sell_point.get("cumulative_realized_eur") or 0.0
+        assert realized == pytest.approx(200.0, abs=1.0)
+        # Equity curve = 450, not the misleading 250
+        assert sell_point["value_eur"] + realized == pytest.approx(450.0, abs=1.0)
+
+    def test_cumulative_realized_forward_filled(self, client):
+        """Realized P&L is forward-filled: dates after the sell date also carry
+        the cumulative value even when there are no new sells."""
+        asset = create_asset(client, ticker="FWDFILL", currency="EUR")
+        create_buy(client, asset["id"], shares=5, price=100.0, currency="EUR",
+                   date="2024-01-02", broker="degiro")
+        client.post("/api/transactions", json={
+            "asset_id": asset["id"], "type": "sell", "broker": "degiro",
+            "shares": 5, "price": 120.0, "currency": "EUR",
+            "commission": 0, "date": "2024-03-01",
+        })
+        seed_price(asset["id"], "2024-01-02", 100.0)
+        seed_price(asset["id"], "2024-03-01", 120.0)
+        seed_price(asset["id"], "2024-06-01", 120.0)  # date after sell — no new position
+        data = {d["date"]: d for d in client.get("/api/portfolio/chart?period=all").json()}
+        if "2024-06-01" in data:
+            later = data["2024-06-01"]
+            assert (later.get("cumulative_realized_eur") or 0.0) == pytest.approx(100.0, abs=0.5)
+
+
 class TestCustomDateRange:
     """Custom date_from/date_to must use historical prices, not today's."""
 
