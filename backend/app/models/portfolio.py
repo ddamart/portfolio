@@ -93,6 +93,7 @@ class ChartPoint(BaseModel):
     value_eur: float
     invested_eur: Optional[float] = None
     cumulative_realized_eur: Optional[float] = None
+    cumulative_cost_sold_eur: Optional[float] = None  # running AVCO cost basis of all sold shares
 
 
 class PriceStatusAsset(BaseModel):

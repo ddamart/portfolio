@@ -1363,6 +1363,74 @@ def _build_realized_step_series(
     return step_dates, step_values
 
 
+def _build_cost_sold_step_series(
+    conn: duckdb.DuckDBPyConnection,
+    broker: Optional[str] = None,
+    asset_type: Optional[str] = None,
+) -> tuple[list[date], list[float]]:
+    """
+    Return (dates, cumulative_avco_cost_of_sold) sorted ascending.
+
+    At each sell event, accumulates the AVCO cost basis of the shares sold.
+    Forward-filled between sell events. Used as the denominator complement for
+    G/P %: total_invested_ever = invested_eur + cumulative_cost_sold_eur,
+    matching the KPI's rendimiento_total_pct denominator.
+    """
+    asset_join = ""
+    filters = ""
+    params: list = []
+
+    type_list = _parse_filter_list(asset_type)
+    broker_list = _parse_filter_list(broker)
+    if type_list:
+        asset_join = "JOIN assets a ON a.id = t.asset_id"
+        filters += " " + _in_clause("a.type", type_list, params)
+    if broker_list:
+        filters += " " + _in_clause("t.broker", broker_list, params)
+
+    rows = conn.execute(f"""
+        SELECT t.asset_id, t.type, t.shares, t.price_eur, t.commission_eur, t.date
+        FROM transactions t
+        {asset_join}
+        WHERE 1=1 {filters}
+        ORDER BY t.date, t.id
+    """, params).fetchall()
+
+    def _to_date(v) -> date:
+        return v if isinstance(v, date) else v.date()
+
+    avg_costs: dict[int, float] = {}
+    shares_held: dict[int, float] = {}
+    cumulative = 0.0
+    step_dates: list[date] = []
+    step_values: list[float] = []
+
+    i = 0
+    while i < len(rows):
+        day = _to_date(rows[i][5])
+        day_cost = 0.0
+        while i < len(rows) and _to_date(rows[i][5]) == day:
+            asset_id, tx_type, shares, price_eur, commission_eur, _ = rows[i]
+            shares = float(shares)
+            price_eur = float(price_eur)
+            commission_eur = float(commission_eur)
+            cur = shares_held.get(asset_id, 0.0)
+            avg = avg_costs.get(asset_id, 0.0)
+            if tx_type == "buy":
+                new_total = cur + shares
+                avg_costs[asset_id] = (cur * avg + shares * price_eur + commission_eur) / new_total
+                shares_held[asset_id] = new_total
+            else:
+                day_cost += shares * avg  # AVCO cost basis of shares sold (no sell commission)
+                shares_held[asset_id] = max(cur - shares, 0.0)
+            i += 1
+        cumulative += day_cost
+        step_dates.append(day)
+        step_values.append(cumulative)
+
+    return step_dates, step_values
+
+
 def _build_invested_step_series(
     conn: duckdb.DuckDBPyConnection,
     broker: Optional[str] = None,
@@ -1549,6 +1617,18 @@ def get_chart_data(
         idx = bisect.bisect_right(real_dates, d) - 1
         return real_values[idx] if idx >= 0 else 0.0
 
+    # Build cumulative AVCO cost-of-sold step series — needed so the frontend can compute
+    # total_invested_ever = invested_eur + cumulative_cost_sold_eur for the G/P % denominator.
+    # This matches the KPI denominator (total_invested_ever_eur) used in rendimiento_total_pct.
+    cost_sold_dates, cost_sold_values = _build_cost_sold_step_series(conn, broker=broker, asset_type=asset_type)
+
+    def _cost_sold_at(chart_date) -> float:
+        if not cost_sold_dates:
+            return 0.0
+        d = chart_date if isinstance(chart_date, date) else chart_date.date()
+        idx = bisect.bisect_right(cost_sold_dates, d) - 1
+        return cost_sold_values[idx] if idx >= 0 else 0.0
+
     # Add balance asset values if not filtered to non-balance types (and no broker filter)
     balance_by_date: dict[date, tuple[float, float]] = {}  # date → (value_eur, net_contrib_eur)
     if (not type_list or 'balance' in type_list) and not broker_list:
@@ -1560,6 +1640,8 @@ def get_chart_data(
         value_eur = float(row[1])
         invested_eur = _invested_at(chart_date)
         cumulative_realized_eur = _realized_at(chart_date) or None  # omit zero before any sell
+        cost_sold = _cost_sold_at(chart_date)
+        cumulative_cost_sold_eur = cost_sold if cost_sold > 0 else None
 
         if balance_by_date:
             bal_value, bal_contrib = balance_by_date.get(chart_date, (0.0, 0.0))
@@ -1574,6 +1656,7 @@ def get_chart_data(
             value_eur=value_eur,
             invested_eur=invested_eur,
             cumulative_realized_eur=cumulative_realized_eur,
+            cumulative_cost_sold_eur=cumulative_cost_sold_eur,
         ))
     return chart
 
