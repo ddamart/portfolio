@@ -459,7 +459,7 @@ def _mstar_resolve_secid(session, isin: str) -> Optional[str]:
     """
     try:
         r = session.get(
-            "https://www.morningstar.es/es/funds/SecuritySearch.ashx",
+            "https://global.morningstar.com/es/funds/SecuritySearch.ashx",
             params={"q": isin, "limit": 5, "lang": "es-ES"},
             timeout=10,
             headers={"Accept": "application/json, text/javascript, */*"},
@@ -480,38 +480,25 @@ def _try_mstar_direct(
     """
     Fetch fund NAV from tools.morningstar.es without any browser.
 
-    tools.morningstar.es/api/rest.svc/timeseries_price/{token}?id={fund_id}&...
-    accepts the fund-level ID (SecuritySearch 'i' field) and returns
-    [[epoch_ms, price], ...] with no auth required beyond the URL token.
+    The timeseries_price endpoint accepts idtype=ISIN directly, so no
+    SecuritySearch lookup is needed. Returns [[epoch_ms, price], ...].
     """
     if not isin:
-        return 0
-    try:
-        r = _MSTAR_DIRECT_SESSION.get(
-            "https://www.morningstar.es/es/funds/SecuritySearch.ashx",
-            params={"q": isin, "limit": 5, "lang": "es-ES"},
-            headers={"Accept": "application/json, text/javascript, */*"},
-            timeout=10,
-        )
-        _, fund_id = _parse_mstar_ids(r.text)
-    except Exception:
-        return 0
-    if not fund_id:
         return 0
 
     try:
         r = _MSTAR_DIRECT_SESSION.get(
             "https://tools.morningstar.es/api/rest.svc/timeseries_price/klr5zyak8x",
             params={
-                "id": fund_id,
+                "id": isin,
                 "currencyId": "EUR",
-                "idtype": "Morningstar",
+                "idtype": "ISIN",
                 "frequency": "daily",
                 "startDate": start.strftime("%Y-%m-%d"),
                 "endDate": end.strftime("%Y-%m-%d"),
                 "outputType": "COMPACTJSON",
             },
-            headers={"Referer": "https://www.morningstar.es/"},
+            headers={"Referer": "https://tools.morningstar.es/"},
             timeout=30,
         )
     except Exception:
@@ -541,7 +528,7 @@ def _try_mstar_direct(
         _upsert_price(conn, asset_id, price_date, float(nav), currency, price_eur)
         count += 1
     if count:
-        logger.info("_try_mstar_direct: %d prices for %s", count, ticker)
+        logger.info("_try_mstar_direct: %d prices for %s (ISIN lookup)", count, ticker)
     return count
 
 
@@ -575,20 +562,19 @@ def _try_mstarpy(
 
             fund = mstarpy.Funds(term=search_term, pageSize=1, session=session)
 
-            # Sanity-check: the found fund's ISIN must match what we asked for.
-            # Use fund.isin (set from the screener result) — it's more reliable than
-            # metaData() which uses the internal securityID and can return a sibling
-            # share class's ISIN rather than the one we actually searched for.
+            # Sanity-check: the found fund's ISIN must match what we asked for
             if isin:
-                screener_isin = getattr(fund, "isin", None)
-                # fund.isin falls back to fund.code when the screener has no isin field;
-                # in that case skip the check (no reliable ISIN to compare against).
-                if screener_isin and screener_isin != getattr(fund, "code", None) and screener_isin != isin:
-                    logger.warning(
-                        "mstarpy ISIN mismatch for %s: searched %s, got %s — skipping",
-                        ticker, isin, screener_isin,
-                    )
-                    return 0
+                try:
+                    meta = fund.metaData()
+                    found_isin = meta.get("isin")
+                    if found_isin and found_isin != isin:
+                        logger.warning(
+                            "mstarpy ISIN mismatch for %s: searched %s, got %s — skipping",
+                            ticker, isin, found_isin,
+                        )
+                        return 0
+                except Exception:
+                    pass
 
             hist = fund.nav(start_date=start, end_date=end)
             if not hist:

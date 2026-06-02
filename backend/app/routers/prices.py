@@ -178,3 +178,4 @@ def refresh_single(asset_id: int, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=404, detail="Asset not found")
     background_tasks.add_task(price_fetcher.refresh_single_asset_bg, settings.database_path, asset_id)
     return {"ok": True, "message": f"Price refresh started for asset {asset_id}"}
+
