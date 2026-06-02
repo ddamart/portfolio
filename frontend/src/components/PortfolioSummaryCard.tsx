@@ -40,15 +40,13 @@ export function PortfolioSummaryCard({ period, dateFrom, dateTo, broker, assetTy
   const unrealizedEur = summary.unrealized_cambio_eur ?? summary.total_pnl_eur
   const unrealizedPct = summary.unrealized_cambio_pct ?? summary.total_pnl_pct
 
-  // ── Rendimiento total: period-scoped when period active, all-time otherwise ─
-  // When period active: cambio_total_eur = G/P no realizada + G/P realizada (period)
-  // When no period:     rendimiento_total_eur = all-time unrealized + all-time realized
-  const rendimientoEur = summary.cambio_total_eur ?? summary.rendimiento_total_eur ?? summary.total_pnl_eur
-  const rendimientoPct = summary.cambio_total_pct ?? summary.rendimiento_total_pct ?? summary.total_pnl_pct
+  // ── Rendimiento total (all-time unrealized + all-time realized) ───────────
+  const rendimientoEur = summary.rendimiento_total_eur ?? summary.total_pnl_eur
+  const rendimientoPct = summary.rendimiento_total_pct ?? summary.total_pnl_pct
 
-  // ── Histórico: all-time return, always — useful context when period is active ─
-  const cambioEur = summary.rendimiento_total_eur ?? summary.total_pnl_eur
-  const cambioPct = summary.rendimiento_total_pct ?? summary.total_pnl_pct
+  // ── Cambio total (period G/P no realizada + period G/P realizada) ─────────
+  const cambioEur = summary.cambio_total_eur ?? rendimientoEur
+  const cambioPct = summary.cambio_total_pct ?? rendimientoPct
 
   return (
     <>
@@ -90,7 +88,7 @@ export function PortfolioSummaryCard({ period, dateFrom, dateTo, broker, assetTy
           subClass={pnlClass(rendimientoEur)}
         />
         <StatCard
-          label="Histórico"
+          label="Cambio"
           value={formatEur(cambioEur)}
           sub={cambioPct != null ? formatPct(cambioPct) : undefined}
           valueClass={pnlClass(cambioEur)}
