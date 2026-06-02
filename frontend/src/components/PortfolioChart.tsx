@@ -56,10 +56,10 @@ export function PortfolioChart({ period, dateFrom, dateTo, onRangeSelect, broker
       if (d.invested_eur == null) return { ...d, display_y: null as number | null }
       const pnl = equity - d.invested_eur
       if (viewMode === 'pnl') return { ...d, display_y: pnl }
-      // G/P %: use total_invested_ever = invested + cost_sold as denominator,
-      // matching the KPI's rendimiento_total_pct (same denominator as the card).
-      const totalInvestedEver = d.invested_eur + (d.cumulative_cost_sold_eur ?? 0)
-      const pct = totalInvestedEver > 0 ? (pnl / totalInvestedEver) * 100 : 0
+      // G/P %: use total_invested_ever_eur (cumulative buy cost from all transactions)
+      // as denominator — mirrors get_realized_pnl, matching rendimiento_total_pct.
+      const denom = d.total_invested_ever_eur ?? d.invested_eur
+      const pct = denom > 0 ? (pnl / denom) * 100 : 0
       return { ...d, display_y: pct }
     })
   }, [data, viewMode])

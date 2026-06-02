@@ -157,7 +157,7 @@ export interface ChartPoint {
   value_eur: number
   invested_eur?: number
   cumulative_realized_eur?: number
-  cumulative_cost_sold_eur?: number
+  total_invested_ever_eur?: number
 }
 
 export interface PriceStatus {
