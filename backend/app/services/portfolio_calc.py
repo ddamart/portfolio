@@ -1260,7 +1260,7 @@ def get_summary(
     rendimiento_total_eur: Optional[float] = None
     rendimiento_total_pct: Optional[float] = None
     total_invested_ever = all_time_realized["total_invested_ever_eur"]
-    rendimiento_total_eur = pnl + all_time_realized["realized_pnl_eur"]
+    rendimiento_total_eur = pnl + all_time_realized["realized_pnl_net_eur"]
     if total_invested_ever > 0.01:
         rendimiento_total_pct = rendimiento_total_eur / total_invested_ever * 100
 
@@ -1268,7 +1268,7 @@ def get_summary(
     cambio_total_eur: Optional[float] = None
     cambio_total_pct: Optional[float] = None
     if unrealized_cambio_eur is not None:
-        cambio_total_eur = unrealized_cambio_eur + realized.get("realized_pnl_eur", 0.0)
+        cambio_total_eur = unrealized_cambio_eur + realized.get("realized_pnl_net_eur", 0.0)
         if period_start_value and abs(period_start_value) > 0.01:
             cambio_total_pct = cambio_total_eur / period_start_value * 100
 
@@ -1281,8 +1281,8 @@ def get_summary(
         period_start_value_eur=period_start_value,
         period_return_eur=period_return_eur,
         period_return_pct=period_return_pct,
-        realized_pnl_all_time_eur=all_time_realized["realized_pnl_eur"],
-        realized_pnl_all_time_pct=all_time_realized["realized_pnl_pct"],
+        realized_pnl_all_time_eur=all_time_realized["realized_pnl_net_eur"],
+        realized_pnl_all_time_pct=all_time_realized["realized_pnl_net_pct"],
         total_commissions_eur=total_commissions,
         total_return_eur=total_return_eur,
         total_return_pct=total_return_pct,

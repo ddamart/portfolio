@@ -72,10 +72,10 @@ export function PortfolioSummaryCard({ period, dateFrom, dateTo, broker, assetTy
         />
         <ClickableCard
           label="G/P realizada"
-          value={formatEur(summary.realized_pnl_eur)}
-          sub={formatPct(summary.realized_pnl_pct)}
-          valueClass={pnlClass(summary.realized_pnl_eur)}
-          subClass={pnlClass(summary.realized_pnl_eur)}
+          value={formatEur(summary.realized_pnl_net_eur)}
+          sub={formatPct(summary.realized_pnl_net_pct)}
+          valueClass={pnlClass(summary.realized_pnl_net_eur)}
+          subClass={pnlClass(summary.realized_pnl_net_eur)}
           onClick={() => setShowSalesModal(true)}
           hint="Ver detalle"
         />
