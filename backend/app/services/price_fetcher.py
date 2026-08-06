@@ -379,7 +379,7 @@ def _fetch_yfinance_batch(
 
 
 # ---------------------------------------------------------------------------
-# Funds (investpy → mstarpy → give up)
+# Funds (investpy → Yahoo cross-listing → mstarpy → give up)
 # ---------------------------------------------------------------------------
 
 def _fetch_fund_price(
@@ -392,6 +392,9 @@ def _fetch_fund_price(
     end: date,
 ) -> int:
     count = _try_investpy(conn, asset_id, ticker, isin, currency, start, end)
+    if count > 0:
+        return count
+    count = _try_yahoo_fund(conn, asset_id, ticker, isin, currency, start, end)
     if count > 0:
         return count
     return _try_mstarpy(conn, asset_id, ticker, isin, currency, start, end)
@@ -428,6 +431,46 @@ def _try_investpy(
     except Exception as e:
         logger.debug("investpy failed for %s (isin=%s): %s", ticker, isin, e)
         return 0
+
+
+def _try_yahoo_fund(
+    conn, asset_id, ticker, isin: Optional[str], currency, start: date, end: date
+) -> int:
+    """
+    Many EU mutual funds are cross-listed and mirrored by Yahoo, either as a native
+    MUTUALFUND quote or via a Frankfurt ".F" fund-share ETF-type listing. Resolve the
+    ISIN through Yahoo's search API and reuse the existing yfinance batch fetcher —
+    this bypasses Morningstar entirely, which blocks both mstarpy and direct HTTP
+    access behind an AWS WAF bot-challenge.
+    """
+    if not isin:
+        return 0
+    try:
+        r = _requests.get(
+            "https://query2.finance.yahoo.com/v1/finance/search",
+            params={"q": isin, "quotesCount": 10},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=10,
+        )
+        if not r.ok:
+            return 0
+        quotes = r.json().get("quotes", [])
+    except Exception as e:
+        logger.debug("Yahoo fund search failed for %s (isin=%s): %s", ticker, isin, e)
+        return 0
+
+    candidates = [q["symbol"] for q in quotes if q.get("quoteType") == "MUTUALFUND"]
+    candidates += [
+        q["symbol"] for q in quotes
+        if q.get("quoteType") == "ETF" and q.get("symbol", "").endswith(".F")
+    ]
+
+    for symbol in candidates:
+        count = _fetch_yfinance_batch(conn, [(asset_id, symbol, currency)], start, end)
+        if count > 0:
+            logger.info("_try_yahoo_fund: %d prices for %s via %s", count, ticker, symbol)
+            return count
+    return 0
 
 
 def _parse_mstar_ids(text: str) -> tuple[Optional[str], Optional[str]]:
