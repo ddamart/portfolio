@@ -608,15 +608,11 @@ def _try_mstarpy(
                     ticker, attempt + 1, 3, wait,
                 )
                 _time.sleep(wait)
-            elif "401" in err_str or "Unauthorized" in err_str:
-                # Unlike 403 (rate-limiting), 401 means the session's auth is stale —
-                # retrying with the same session just gets the same 401. Recreate it.
-                logger.warning(
-                    "mstarpy 401 for %s (attempt %d/%d) — recreating session",
-                    ticker, attempt + 1, 3,
-                )
-                _invalidate_mstar_session()
             else:
+                # 401/Unauthorized observed here is Morningstar's AWS WAF bot-challenge
+                # blocking global.morningstar.com outright (verified: fresh sessions get
+                # the same 401), not a stale-session issue — retrying wastes a Chrome
+                # relaunch per attempt for no benefit. Fail fast.
                 break
 
     logger.warning("mstarpy gave up for %s (isin=%s): %s", ticker, isin, last_exc)
