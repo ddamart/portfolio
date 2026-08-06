@@ -9,7 +9,7 @@ import pandas as pd
 from datetime import date
 from unittest.mock import patch, MagicMock, ANY
 import app.database as db_module
-from app.services.price_fetcher import _try_mstarpy, _fund_name_from_mstar, _try_yahoo_fund
+from app.services.price_fetcher import _try_mstarpy, _fund_name_from_mstar, _try_yahoo_fund, _try_onvista_fund
 
 
 def _mock_funds_class(name: str, isin: str, nav_data: list):
@@ -201,6 +201,97 @@ class TestTryYahooFund:
         conn = db_module.get_db()
         with patch("app.services.price_fetcher._requests.get", side_effect=RuntimeError("network error")):
             count = _try_yahoo_fund(
+                conn, asset_id=1, ticker="X", isin="LU0000000000", currency="EUR",
+                start=date(2025, 1, 1), end=date(2025, 1, 31),
+            )
+        assert count == 0
+
+
+def _mock_json_response(payload: dict, ok: bool = True):
+    resp = MagicMock()
+    resp.ok = ok
+    resp.json.return_value = payload
+    return resp
+
+
+class TestTryOnvistaFund:
+    def test_returns_zero_without_isin(self, client):
+        conn = db_module.get_db()
+        assert _try_onvista_fund(
+            conn, asset_id=1, ticker="X", isin=None, currency="EUR",
+            start=date(2025, 1, 1), end=date(2025, 1, 31),
+        ) == 0
+
+    def test_stores_prices_when_currency_matches(self, client):
+        conn = db_module.get_db()
+        conn.execute(
+            "INSERT INTO assets(id,name,ticker,type,currency,manual_price) VALUES (992,'MWOTEEA','LU0171310443','fund','EUR',false)"
+        )
+        search_payload = {"list": [{
+            "entityType": "FUND", "isin": "LU0171310443",
+            "entityValue": "9374993", "symbol": "MI9E",
+        }]}
+        import calendar
+        ts1 = calendar.timegm(date(2025, 1, 2).timetuple())
+        ts2 = calendar.timegm(date(2025, 1, 3).timetuple())
+        history_payload = {
+            "isoCurrency": "EUR",
+            "datetimeLast": [ts1, ts2],
+            "last": [126.64, 128.10],
+        }
+        with patch(
+            "app.services.price_fetcher._requests.get",
+            side_effect=[_mock_json_response(search_payload), _mock_json_response(history_payload)],
+        ):
+            count = _try_onvista_fund(
+                conn, asset_id=992, ticker="MWOTEEA", isin="LU0171310443",
+                currency="EUR", start=date(2025, 1, 1), end=date(2025, 1, 31),
+            )
+
+        assert count == 2
+        rows = conn.execute(
+            "SELECT date, price FROM prices WHERE asset_id = 992 ORDER BY date"
+        ).fetchall()
+        assert len(rows) == 2
+
+    def test_skips_on_currency_mismatch(self, client):
+        """A EUR-quoted cross-listing must not be stored for a USD-denominated asset."""
+        conn = db_module.get_db()
+        conn.execute(
+            "INSERT INTO assets(id,name,ticker,type,currency,manual_price) VALUES (991,'BGFNGA2','LU1861215975','fund','USD',false)"
+        )
+        search_payload = {"list": [{
+            "entityType": "FUND", "isin": "LU1861215975",
+            "entityValue": "142640198", "symbol": "B3FM",
+        }]}
+        history_payload = {"isoCurrency": "EUR", "datetimeLast": [], "last": []}
+        with patch(
+            "app.services.price_fetcher._requests.get",
+            side_effect=[_mock_json_response(search_payload), _mock_json_response(history_payload)],
+        ):
+            count = _try_onvista_fund(
+                conn, asset_id=991, ticker="BGFNGA2", isin="LU1861215975",
+                currency="USD", start=date(2025, 1, 1), end=date(2025, 1, 31),
+            )
+
+        assert count == 0
+
+    def test_returns_zero_when_no_fund_match(self, client):
+        conn = db_module.get_db()
+        with patch(
+            "app.services.price_fetcher._requests.get",
+            return_value=_mock_json_response({"list": []}),
+        ):
+            count = _try_onvista_fund(
+                conn, asset_id=1, ticker="X", isin="LU0000000000", currency="EUR",
+                start=date(2025, 1, 1), end=date(2025, 1, 31),
+            )
+        assert count == 0
+
+    def test_returns_zero_on_search_failure(self, client):
+        conn = db_module.get_db()
+        with patch("app.services.price_fetcher._requests.get", side_effect=RuntimeError("network error")):
+            count = _try_onvista_fund(
                 conn, asset_id=1, ticker="X", isin="LU0000000000", currency="EUR",
                 start=date(2025, 1, 1), end=date(2025, 1, 31),
             )

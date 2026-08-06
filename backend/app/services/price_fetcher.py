@@ -379,7 +379,7 @@ def _fetch_yfinance_batch(
 
 
 # ---------------------------------------------------------------------------
-# Funds (investpy → Yahoo cross-listing → mstarpy → give up)
+# Funds (investpy → Yahoo cross-listing → Onvista cross-listing → mstarpy → give up)
 # ---------------------------------------------------------------------------
 
 def _fetch_fund_price(
@@ -395,6 +395,9 @@ def _fetch_fund_price(
     if count > 0:
         return count
     count = _try_yahoo_fund(conn, asset_id, ticker, isin, currency, start, end)
+    if count > 0:
+        return count
+    count = _try_onvista_fund(conn, asset_id, ticker, isin, currency, start, end)
     if count > 0:
         return count
     return _try_mstarpy(conn, asset_id, ticker, isin, currency, start, end)
@@ -471,6 +474,70 @@ def _try_yahoo_fund(
             logger.info("_try_yahoo_fund: %d prices for %s via %s", count, ticker, symbol)
             return count
     return 0
+
+
+def _try_onvista_fund(
+    conn, asset_id, ticker, isin: Optional[str], currency, start: date, end: date
+) -> int:
+    """
+    Onvista.de indexes German/Swiss retail cross-listings for many EU funds and its
+    JSON API isn't behind the WAF blocking Morningstar/boerse-frankfurt. Only usable
+    when the listing's quoted currency matches the asset's stored currency — some
+    cross-listings quote in EUR for a fund whose actual share class is USD/GBP etc,
+    and converting that would require a second FX hop we don't want to guess at here.
+    Only returns recent history (~1 month), so this fills forward gaps, not backfills.
+    """
+    if not isin:
+        return 0
+    try:
+        r = _requests.get(
+            "https://api.onvista.de/api/v1/instruments/search",
+            params={"searchValue": isin},
+            headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"},
+            timeout=10,
+        )
+        if not r.ok:
+            return 0
+        match = next(
+            (q for q in r.json().get("list", [])
+             if q.get("entityType") == "FUND" and q.get("isin") == isin),
+            None,
+        )
+        if not match:
+            return 0
+
+        hist = _requests.get(
+            f"https://api.onvista.de/api/v1/instruments/FUND/{match['entityValue']}/eod_history",
+            params={"range": "M1"},
+            headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"},
+            timeout=10,
+        )
+        if not hist.ok:
+            return 0
+        data = hist.json()
+    except Exception as e:
+        logger.debug("onvista fund lookup failed for %s (isin=%s): %s", ticker, isin, e)
+        return 0
+
+    if data.get("isoCurrency") != currency.upper():
+        logger.debug(
+            "onvista currency mismatch for %s: listing is %s, asset is %s — skipping",
+            ticker, data.get("isoCurrency"), currency,
+        )
+        return 0
+
+    from datetime import datetime as _dt, timezone as _tz
+    count = 0
+    for ts, close in zip(data.get("datetimeLast", []), data.get("last", [])):
+        price_date = _dt.fromtimestamp(ts, tz=_tz.utc).date()
+        if price_date < start or price_date > end or close is None:
+            continue
+        price_eur = _price_to_eur(conn, float(close), currency, price_date)
+        _upsert_price(conn, asset_id, price_date, float(close), currency, price_eur)
+        count += 1
+    if count:
+        logger.info("_try_onvista_fund: %d prices for %s via %s", count, ticker, match["symbol"])
+    return count
 
 
 def _parse_mstar_ids(text: str) -> tuple[Optional[str], Optional[str]]:
