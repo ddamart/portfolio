@@ -43,7 +43,7 @@ def premarket_prices():
                (SELECT price FROM prices WHERE asset_id = a.id ORDER BY date DESC LIMIT 1) AS last_price
         FROM assets a
         JOIN transactions t ON t.asset_id = a.id
-        WHERE a.type != 'balance' AND a.manual_price = false
+        WHERE a.type NOT IN ('balance', 'fund') AND a.manual_price = false
     """).fetchall()
     if not rows:
         return []
