@@ -320,6 +320,21 @@ def _fetch_yfinance_prices_ranged(
     return total
 
 
+def _has_split_mismatch(conn: duckdb.DuckDBPyConnection, asset_id: int, ticker_data) -> bool:
+    """True if a freshly downloaded close differs wildly from the stored close for the same date."""
+    for idx_date, row in ticker_data.iterrows():
+        close = row.get("Close")
+        if close is None or close != close or close <= 0:
+            continue
+        price_date = idx_date.date() if hasattr(idx_date, "date") else idx_date
+        stored = conn.execute(
+            "SELECT price FROM prices WHERE asset_id = ? AND date = ?", [asset_id, price_date]
+        ).fetchone()
+        if stored and stored[0] and not 0.6 < float(close) / float(stored[0]) < 1.6:
+            return True
+    return False
+
+
 def _fetch_yfinance_batch(
     conn: duckdb.DuckDBPyConnection,
     assets: list[tuple[int, str, str]],
@@ -358,6 +373,13 @@ def _fetch_yfinance_batch(
             if hasattr(ticker_data.columns, "levels"):
                 ticker_data = ticker_data.droplevel(1, axis=1)
             if ticker_data.empty:
+                continue
+            if _has_split_mismatch(conn, asset_id, ticker_data):
+                # Yahoo re-adjusts the whole history after a split, so stored prices are stale.
+                logger.warning("Split detected for %s: rebuilding price history", ticker)
+                conn.execute("DELETE FROM prices WHERE asset_id = ?", [asset_id])
+                new_start, new_end = _get_fetch_range(conn, asset_id)
+                count += _fetch_yfinance_batch(conn, [(asset_id, ticker, currency)], new_start, new_end)
                 continue
             for idx_date, row in ticker_data.iterrows():
                 price_date = idx_date.date() if hasattr(idx_date, "date") else idx_date

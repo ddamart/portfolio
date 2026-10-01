@@ -322,3 +322,32 @@ class TestFundNameFromMstar:
             name = _fund_name_from_mstar("LU0996179007")
 
         assert name is None
+
+
+class TestSplitRebuild:
+    def test_split_rebuilds_history(self, client):
+        """Stored pre-split prices are replaced when Yahoo's adjusted close differs wildly."""
+        from app.services.price_fetcher import _fetch_yfinance_batch
+        conn = db_module.get_db()
+        conn.execute(
+            "INSERT INTO assets(id,name,ticker,type,currency,manual_price) VALUES (990,'Split Co','SPL','stock','EUR',false)"
+        )
+        conn.execute(
+            "INSERT INTO prices VALUES (990,'2026-09-16',50.0,'EUR',50.0),(990,'2026-09-17',51.0,'EUR',51.0)"
+        )
+        frame = _fake_yf_frame(["2026-09-16", "2026-09-17", "2026-09-18"], [16.67, 17.0, 18.0])
+
+        with patch("app.services.price_fetcher.yf.download", return_value=frame):
+            _fetch_yfinance_batch(conn, [(990, "SPL", "EUR")], date(2026, 9, 17), date(2026, 9, 18))
+
+        rows = conn.execute("SELECT price FROM prices WHERE asset_id = 990 ORDER BY date").fetchall()
+        assert [float(r[0]) for r in rows] == [16.67, 17.0, 18.0]
+
+    def test_no_rebuild_without_split(self, client):
+        from app.services.price_fetcher import _has_split_mismatch
+        conn = db_module.get_db()
+        conn.execute(
+            "INSERT INTO assets(id,name,ticker,type,currency,manual_price) VALUES (989,'Plain','PLN','stock','EUR',false)"
+        )
+        conn.execute("INSERT INTO prices VALUES (989,'2026-09-17',100.0,'EUR',100.0)")
+        assert not _has_split_mismatch(conn, 989, _fake_yf_frame(["2026-09-17"], [103.0]))
