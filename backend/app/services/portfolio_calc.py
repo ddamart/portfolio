@@ -978,55 +978,35 @@ def get_summary(
     date_to_filter = "AND t.date <= ?"
     summary_params.append(effective_date_to)
 
-    row = conn.execute(f"""
-    WITH avco AS (
-        -- Running AVCO per asset: same approach as transactions list view.
-        -- Sells don't change AVCO; the avco_eur on a sell row is the cost basis per share
-        -- AT THAT MOMENT, needed to correctly reduce cost_basis on partial redemptions.
-        SELECT
-            t.asset_id, t.type, t.shares::DOUBLE AS shares, t.price_eur::DOUBLE AS price_eur,
-            SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE * t.price_eur::DOUBLE ELSE 0.0 END) OVER (
-                PARTITION BY t.asset_id ORDER BY t.date, t.id
-                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-            ) / NULLIF(SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE 0.0 END) OVER (
-                PARTITION BY t.asset_id ORDER BY t.date, t.id
-                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-            ), 0) AS avco_eur
+    asset_rows = conn.execute(f"""
+    WITH holdings AS (
+        SELECT t.asset_id, SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE -t.shares::DOUBLE END) AS total_shares
         FROM transactions t
         {asset_join}
         WHERE 1=1 {type_filter} {broker_filter} {date_to_filter}
-    ),
-    holdings AS (
-        SELECT
-            asset_id,
-            SUM(CASE WHEN type='buy' THEN shares ELSE -shares END) AS total_shares,
-            -- cost_basis: deducts sell shares at their AVCO at sell time (matches chart step series)
-            SUM(CASE WHEN type='buy' THEN shares * price_eur
-                     ELSE -shares * avco_eur END)                   AS cost_basis
-        FROM avco
-        GROUP BY asset_id
-        HAVING SUM(CASE WHEN type='buy' THEN shares ELSE -shares END) > 0.000001
+        GROUP BY t.asset_id
+        HAVING SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE -t.shares::DOUBLE END) > 0.000001
     ),
     latest_prices AS (
         SELECT DISTINCT ON (asset_id) asset_id, price_eur::DOUBLE AS price_eur, date
         FROM prices ORDER BY asset_id, date DESC
-    ),
-    joined AS (
-        SELECT
-            lp.price_eur IS NOT NULL                              AS has_price,
-            h.total_shares * COALESCE(lp.price_eur, 0.0)         AS value_eur,
-            h.cost_basis                                          AS invested_eur,
-            lp.date
-        FROM holdings h
-        LEFT JOIN latest_prices lp ON lp.asset_id = h.asset_id
     )
-    SELECT
-        COALESCE(SUM(CASE WHEN has_price THEN value_eur ELSE 0 END), 0)                          AS total_value_eur,
-        COALESCE(SUM(invested_eur), 0)                                                            AS total_invested_eur,
-        COALESCE(SUM(CASE WHEN has_price THEN value_eur - invested_eur ELSE 0 END), 0)            AS total_pnl_eur,
-        MAX(date)                                                                                  AS last_updated
-    FROM joined
-    """, summary_params).fetchone()
+    SELECT h.asset_id, h.total_shares, lp.price_eur, lp.date
+    FROM holdings h
+    LEFT JOIN latest_prices lp ON lp.asset_id = h.asset_id
+    """, summary_params).fetchall()
+
+    # Cost basis = open shares × running AVCO (same basis as the holdings table)
+    positions = _avco_positions(conn, effective_date_to, broker_list)
+    tx_value_sum = tx_invested_sum = tx_pnl_sum = 0.0
+    for asset_id, shares, price_eur, _ in asset_rows:
+        invested = shares * positions[asset_id][0]
+        tx_invested_sum += invested
+        if price_eur is not None:
+            tx_value_sum += shares * price_eur
+            tx_pnl_sum += shares * price_eur - invested
+    price_dates = [r[3] for r in asset_rows if r[3] is not None]
+    row = (tx_value_sum, tx_invested_sum, tx_pnl_sum, max(price_dates) if price_dates else None)
 
     # Realized P&L: period-filtered for the realized card; always all-time for Rendimiento Total
     if is_period and date_from:

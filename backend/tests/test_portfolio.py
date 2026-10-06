@@ -48,6 +48,19 @@ class TestPortfolioSummary:
         assert data["total_value_eur"] == pytest.approx(0.0, abs=1.0)
 
 
+    def test_summary_invested_ignores_closed_lot_after_partial_sell(self, client):
+        """Old lot closed, new position opened, then partly sold: invested = 4 × 300."""
+        asset = create_asset(client, currency="EUR")
+        create_buy(client, asset["id"], shares=1, price=2000.0, currency="EUR", date="2021-03-01")
+        create_sell(client, asset["id"], shares=1, price=2700.0, currency="EUR", date="2021-08-23")
+        create_buy(client, asset["id"], shares=5, price=300.0, currency="EUR", date="2026-10-05")
+        create_sell(client, asset["id"], shares=1, price=320.0, currency="EUR", date="2026-10-06")
+        seed_price(asset["id"], "2026-10-06", 320.0)
+        data = client.get("/api/portfolio/summary").json()
+        assert data["total_invested_eur"] == pytest.approx(1200.0, abs=0.01)
+        assert data["total_value_eur"] == pytest.approx(1280.0, abs=0.01)
+
+
 class TestPortfolioHoldings:
     def test_holdings_empty(self, client):
         r = client.get("/api/portfolio/holdings")
