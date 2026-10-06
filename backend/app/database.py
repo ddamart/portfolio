@@ -304,6 +304,13 @@ def _apply_schema(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute("ALTER TABLE transactions ADD COLUMN commission_currency VARCHAR(3)")
         conn.execute("UPDATE transactions SET commission_currency = currency WHERE commission_currency IS NULL")
 
+    # Data repair: edits used to leave commission_eur at 0 when a fee was added later.
+    # Idempotent; only exact (EUR) fees, other currencies are fixed on the next edit.
+    conn.execute("""
+        UPDATE transactions SET commission_eur = commission
+        WHERE commission > 0 AND commission_eur = 0 AND commission_currency = 'EUR'
+    """)
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS prices (
             asset_id  INTEGER NOT NULL REFERENCES assets(id),

@@ -247,6 +247,28 @@ class TestUpdateTransaction:
         data = r.json()
         assert data["shares"] == 20
         assert data["price"] == 75.0
+        assert data["price_eur"] == 75.0  # EUR value follows the edited price
+
+    def test_update_adds_commission_sets_commission_eur(self, client):
+        """Degiro case: fee added in EUR on a USD trade after creation."""
+        asset = create_asset(client, currency="USD")
+        create_fx_rate(client, "USD", 0.90, date="2024-01-02")
+        tx = create_buy(client, asset["id"], shares=10, price=100.0, currency="USD")
+        r = client.put(f"/api/transactions/{tx['id']}",
+                       json={"commission": 3.94, "commission_currency": "EUR"})
+        data = r.json()
+        assert data["commission_eur"] == 3.94
+        assert abs(data["price_eur"] - 90.0) < 0.01
+
+    def test_update_notes_keeps_locked_price_eur(self, client):
+        """price_eur is locked at trade time: editing other fields must not touch it."""
+        asset = create_asset(client, currency="USD")
+        create_fx_rate(client, "USD", 0.90, date="2024-01-02")
+        tx = create_buy(client, asset["id"], shares=10, price=100.0, currency="USD")
+        create_fx_rate(client, "USD", 0.50, date="2024-01-02")  # FX table changes later
+        r = client.put(f"/api/transactions/{tx['id']}",
+                       json={"notes": "x", "price": 100.0, "currency": "USD", "date": "2024-01-02"})
+        assert abs(r.json()["price_eur"] - 90.0) < 0.01
 
     def test_update_broker(self, client):
         """Broker can be changed to any valid broker."""

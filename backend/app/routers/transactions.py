@@ -125,6 +125,24 @@ def _current_balance(conn, asset_id: int) -> float:
     return float(row[0])
 
 
+def _eur_values(conn, price: float, currency: str, commission: float,
+                commission_ccy: str, on_date: date) -> tuple[float, float]:
+    """(price_eur, commission_eur) from the FX table on the trade date."""
+    from app.services.currency import get_rate_to_eur
+    try:
+        rate = get_rate_to_eur(conn, currency, on_date)
+    except ValueError:
+        rate = 1.0  # no FX data yet — fallback; will be corrected after price refresh
+    if commission_ccy.upper() == currency.upper():
+        comm_rate = rate
+    else:
+        try:
+            comm_rate = get_rate_to_eur(conn, commission_ccy, on_date)
+        except ValueError:
+            comm_rate = rate
+    return price * rate, commission * comm_rate
+
+
 @router.post("", response_model=TransactionOut, status_code=201)
 def create_transaction(body: TransactionCreate):
     conn = get_db()
@@ -140,27 +158,12 @@ def create_transaction(body: TransactionCreate):
                 detail=f"Saldo insuficiente: tienes {current:g} participaciones, intentas vender {body.shares:g}",
             )
 
-    # Compute EUR values from FX table when not provided by caller
-    from app.services.currency import get_rate_to_eur
-    try:
-        rate = get_rate_to_eur(conn, body.currency, body.date)
-    except ValueError:
-        rate = 1.0  # no FX data yet — fallback; will be corrected after price refresh
-    price_eur = body.price_eur if body.price_eur is not None else body.price * rate
-
     commission_ccy = (body.commission_currency or body.currency).upper()
-    if body.commission_eur is not None:
-        commission_eur = body.commission_eur
-    elif commission_ccy == "EUR":
-        commission_eur = body.commission
-    elif commission_ccy == body.currency.upper():
-        commission_eur = body.commission * rate
-    else:
-        try:
-            comm_rate = get_rate_to_eur(conn, commission_ccy, body.date)
-        except ValueError:
-            comm_rate = rate
-        commission_eur = body.commission * comm_rate
+    calc_price_eur, calc_commission_eur = _eur_values(
+        conn, body.price, body.currency, body.commission, commission_ccy, body.date
+    )
+    price_eur = body.price_eur if body.price_eur is not None else calc_price_eur
+    commission_eur = body.commission_eur if body.commission_eur is not None else calc_commission_eur
 
     conn.execute(
         """
@@ -193,13 +196,33 @@ def create_transaction(body: TransactionCreate):
 @router.put("/{tx_id}", response_model=TransactionOut)
 def update_transaction(tx_id: int, body: TransactionUpdate):
     conn = get_db()
-    existing = conn.execute("SELECT id FROM transactions WHERE id = ?", [tx_id]).fetchone()
+    existing = conn.execute(
+        "SELECT price, currency, commission, commission_currency, date FROM transactions WHERE id = ?",
+        [tx_id],
+    ).fetchone()
     if not existing:
         raise HTTPException(status_code=404, detail="Transaction not found")
 
     updates = {k: v for k, v in body.model_dump().items() if v is not None}
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
+
+    # Keep the EUR columns in sync with the edited row. commission_eur always follows
+    # the commission. price_eur is locked at trade time, so recompute it only when
+    # the price, currency or date really change.
+    old_price, old_ccy, old_comm, old_comm_ccy, old_date = existing
+    price = updates.get("price", float(old_price))
+    currency = updates.get("currency", old_ccy)
+    on_date = updates.get("date", old_date)
+    comm_ccy = updates.get("commission_currency") or old_comm_ccy or currency
+    calc_price_eur, calc_commission_eur = _eur_values(
+        conn, price, currency, updates.get("commission", float(old_comm)), comm_ccy, on_date
+    )
+    updates.setdefault("commission_eur", calc_commission_eur)
+    if "price_eur" not in updates and (
+        abs(price - float(old_price)) > 1e-9 or currency != old_ccy or on_date != old_date
+    ):
+        updates["price_eur"] = calc_price_eur
 
     updates["updated_at"] = "current_timestamp"
     set_parts = []
