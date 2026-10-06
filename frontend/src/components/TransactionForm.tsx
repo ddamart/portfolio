@@ -227,7 +227,7 @@ export function TransactionForm({ existing, onClose, onSaved }: Props) {
       price_eur:           (totalEurOverride != null && sharesN > 0) ? totalEurOverride / sharesN : undefined,
       currency,
       commission:          commissionN,
-      commission_currency: commissionCurrency !== currency ? commissionCurrency : undefined,
+      commission_currency: commissionCurrency,  // always sent, so an edit back to the trade currency sticks
       date,
       notes:               notes || undefined,
     }

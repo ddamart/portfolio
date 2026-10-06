@@ -260,6 +260,17 @@ class TestUpdateTransaction:
         assert data["commission_eur"] == 3.94
         assert abs(data["price_eur"] - 90.0) < 0.01
 
+    def test_update_commission_currency_back_to_trade_currency(self, client):
+        """Fee first in EUR, then edited back to the trade currency (USD): both columns follow."""
+        asset = create_asset(client, currency="USD")
+        create_fx_rate(client, "USD", 0.90, date="2024-01-02")
+        tx = create_buy(client, asset["id"], shares=10, price=100.0, currency="USD")
+        client.put(f"/api/transactions/{tx['id']}", json={"commission": 2.0, "commission_currency": "EUR"})
+        r = client.put(f"/api/transactions/{tx['id']}", json={"commission": 2.0, "commission_currency": "USD"})
+        data = r.json()
+        assert data["commission_currency"] == "USD"
+        assert abs(data["commission_eur"] - 1.80) < 0.01
+
     def test_update_notes_keeps_locked_price_eur(self, client):
         """price_eur is locked at trade time: editing other fields must not touch it."""
         asset = create_asset(client, currency="USD")
