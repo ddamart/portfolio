@@ -297,6 +297,18 @@ class TestRealizedPnL:
         assert abs(sell["cost_basis_eur"] - 110.0) < 0.01
         assert abs(sell["realized_pnl_eur"] - 60.0) < 0.01
 
+    def test_closed_lot_does_not_affect_later_sell(self, client):
+        """Lot of 1 @ 2000 fully sold, then 5 @ 300 bought: the next sell uses AVCO 300."""
+        asset = create_asset(client, currency="EUR")
+        create_buy(client, asset["id"], shares=1, price=2000.0, currency="EUR", date="2021-03-01")
+        create_sell(client, asset["id"], shares=1, price=2700.0, currency="EUR", date="2021-08-23")
+        create_buy(client, asset["id"], shares=5, price=300.0, currency="EUR", date="2026-10-05")
+        create_sell(client, asset["id"], shares=1, price=320.0, currency="EUR", date="2026-10-06")
+        sell = next(t for t in client.get("/api/transactions").json()
+                    if t["type"] == "sell" and t["date"] == "2026-10-06")
+        assert abs(sell["cost_basis_eur"] - 300.0) < 0.01
+        assert abs(sell["realized_pnl_eur"] - 20.0) < 0.01
+
     def test_sell_below_cost_negative_pnl(self, client):
         """Selling below AVCO produces a negative realized P&L."""
         asset = create_asset(client, currency="EUR")

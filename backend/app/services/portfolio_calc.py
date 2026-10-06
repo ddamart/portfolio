@@ -274,6 +274,31 @@ def _avco_positions(
     }
 
 
+def avco_by_transaction(conn: duckdb.DuckDBPyConnection) -> dict[int, float]:
+    """
+    Running AVCO in EUR (buy commissions included) at each transaction, over the
+    full history: {tx_id: avco}. On a sell row it is the cost basis per share sold.
+    A full exit resets the average.
+    """
+    rows = conn.execute("""
+        SELECT id, asset_id, type, shares::DOUBLE, price_eur::DOUBLE, commission_eur::DOUBLE
+        FROM transactions ORDER BY asset_id, date, id
+    """).fetchall()
+    state: dict[int, tuple[float, float]] = {}  # asset_id → (shares, avco)
+    result: dict[int, float] = {}
+    for tx_id, asset_id, tx_type, shares, price_eur, commission_eur in rows:
+        held, avg = state.get(asset_id, (0.0, 0.0))
+        if tx_type == "buy":
+            total = held + shares
+            avg = (held * avg + shares * price_eur + commission_eur) / total
+            held = total
+        else:
+            held = max(held - shares, 0.0)
+        state[asset_id] = (held, avg)
+        result[tx_id] = avg
+    return result
+
+
 def _get_balance_holdings(
     conn: duckdb.DuckDBPyConnection,
     latest_date: date,

@@ -4,7 +4,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from app.database import get_db
 from app.models.transaction import TransactionCreate, TransactionOut, TransactionUpdate
-from app.services.portfolio_calc import _period_to_date_range
+from app.services.portfolio_calc import _period_to_date_range, avco_by_transaction
 
 router = APIRouter(prefix="/api/transactions", tags=["transactions"])
 
@@ -76,40 +76,29 @@ def list_transactions(
     sort_col = sort_by if sort_by in valid_sort else "date"
     sort_direction = "DESC" if sort_dir.lower() == "desc" else "ASC"
 
-    # AVCO CTE runs on full transaction history (no filter) so date-filtered views
-    # still get the correct running average cost basis for each sell.
     query = f"""
-    WITH avco AS (
-        SELECT
-            id,
-            SUM(CASE WHEN type='buy' THEN shares * price_eur + commission_eur ELSE 0 END) OVER (
-                PARTITION BY asset_id ORDER BY date, id
-                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-            ) /
-            NULLIF(SUM(CASE WHEN type='buy' THEN shares ELSE 0 END) OVER (
-                PARTITION BY asset_id ORDER BY date, id
-                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-            ), 0) AS avco_eur
-        FROM transactions
-    )
     SELECT
         t.id, t.asset_id, a.name, a.ticker, a.type, a.image_url,
         t.type, t.broker, t.shares, t.price, t.price_eur,
         t.currency, t.commission, t.commission_currency, t.commission_eur,
-        t.date, t.notes, t.created_at, t.updated_at,
-        CASE WHEN t.type = 'sell' THEN av.avco_eur END AS cost_basis_eur,
-        CASE WHEN t.type = 'sell'
-             THEN t.shares * (t.price_eur - av.avco_eur) - t.commission_eur
-        END AS realized_pnl_eur
+        t.date, t.notes, t.created_at, t.updated_at
     FROM transactions t
     JOIN assets a ON a.id = t.asset_id
-    JOIN avco av ON av.id = t.id
     {where}
     ORDER BY t.{sort_col} {sort_direction}
     """
 
     rows = conn.execute(query, params).fetchall()
-    return [_row_to_out(r) for r in rows]
+    # AVCO runs on the full history (no filter) so filtered views still get the
+    # correct cost basis for each sell.
+    avco = avco_by_transaction(conn)
+    out = []
+    for r in rows:
+        if r[6] == "sell":
+            basis = avco[r[0]]
+            r = (*r, basis, float(r[8]) * (float(r[10]) - basis) - float(r[14]))
+        out.append(_row_to_out(r))
+    return out
 
 
 @router.get("/{tx_id}", response_model=TransactionOut)
