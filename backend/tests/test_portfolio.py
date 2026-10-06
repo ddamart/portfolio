@@ -1,6 +1,6 @@
 """Tests for /api/portfolio endpoints."""
 import pytest
-from .conftest import create_asset, create_buy, create_fx_rate
+from .conftest import create_asset, create_buy, create_sell, create_fx_rate
 import app.database as db_module
 
 
@@ -121,6 +121,34 @@ class TestPortfolioHoldings:
         row = rows[0]
         assert abs(row["avg_buy_price"] - 100.0) < 0.01       # native USD
         assert abs(row["avg_buy_price_eur"] - 90.0) < 0.01    # EUR-converted
+
+    def test_closed_lot_does_not_leak_into_new_position(self, client):
+        """GOOG case: an old lot fully sold on Revolut must not affect a new TR position
+        (avg cost, native avg booked in EUR, broker list)."""
+        asset = create_asset(client, ticker="GOOG", currency="USD")
+        create_buy(client, asset["id"], shares=1, price=2000.0, currency="USD",
+                   date="2021-03-01", broker="revolut")
+        create_sell(client, asset["id"], shares=1, price=2700.0, currency="USD",
+                    date="2021-08-23", broker="revolut")
+        # New position bought in EUR on a USD asset
+        create_buy(client, asset["id"], shares=5, price=300.0, currency="EUR",
+                   date="2026-10-05", broker="trade_republic")
+        seed_price(asset["id"], "2026-10-05", 345.0, currency="USD", price_eur=306.67)
+        row = client.get("/api/portfolio/holdings").json()[0]
+        assert row["broker"] == "trade_republic"
+        assert row["avg_buy_price_eur"] == pytest.approx(300.0, abs=0.01)
+        assert row["avg_buy_price"] == pytest.approx(300.0 * 345.0 / 306.67, abs=0.05)  # USD
+        assert row["pnl_eur"] == pytest.approx(5 * (306.67 - 300.0), abs=0.05)
+
+    def test_avg_cost_is_avco_after_partial_sell(self, client):
+        """Buy 10@10, sell 5, buy 5@20 → AVCO 15 (not the 13.33 average of all buys)."""
+        asset = create_asset(client, currency="EUR")
+        create_buy(client, asset["id"], shares=10, price=10.0, currency="EUR", date="2024-01-02")
+        create_sell(client, asset["id"], shares=5, price=12.0, currency="EUR", date="2024-02-01")
+        create_buy(client, asset["id"], shares=5, price=20.0, currency="EUR", date="2024-03-01")
+        seed_price(asset["id"], "2024-03-01", 20.0)
+        row = client.get("/api/portfolio/holdings").json()[0]
+        assert row["avg_buy_price_eur"] == pytest.approx(15.0, abs=0.01)
 
     def test_pnl_positive_when_price_up(self, client):
         asset = create_asset(client, currency="EUR")

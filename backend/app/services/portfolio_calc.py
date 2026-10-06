@@ -104,12 +104,7 @@ def get_holdings(
     WITH holdings AS (
         SELECT
             t.asset_id,
-            SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE -t.shares::DOUBLE END) AS total_shares,
-            SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE * t.price_eur::DOUBLE ELSE 0.0 END) /
-                NULLIF(SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE 0.0 END), 0) AS avg_buy_price_eur,
-            SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE * t.price::DOUBLE ELSE 0.0 END) /
-                NULLIF(SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE 0.0 END), 0) AS avg_buy_price,
-            STRING_AGG(DISTINCT t.broker, ', ' ORDER BY t.broker) AS broker
+            SUM(CASE WHEN t.type='buy' THEN t.shares::DOUBLE ELSE -t.shares::DOUBLE END) AS total_shares
         FROM transactions t
         WHERE 1=1 {tx_date_filter} {broker_filter}
         GROUP BY t.asset_id
@@ -139,19 +134,12 @@ def get_holdings(
         a.currency,
         a.image_url,
         a.manual_price,
-        h.broker,
         h.total_shares,
-        h.avg_buy_price_eur,
-        h.avg_buy_price,
         lp.price                                                          AS current_price,
         lp.price_eur                                                      AS current_price_eur,
         h.total_shares * lp.price_eur                                    AS value_eur,
         h.total_shares * lp.price                                        AS value_ccy,
-        h.total_shares * lp.price_eur - h.total_shares * h.avg_buy_price_eur AS pnl_eur,
-        h.total_shares * lp.price - h.total_shares * (h.avg_buy_price_eur / NULLIF(lp.price_eur / NULLIF(lp.price, 0), 0)) AS pnl_ccy,
-        (lp.price_eur / NULLIF(h.avg_buy_price_eur, 0) - 1) * 100       AS gain_pct,
-        (lp.price_eur / NULLIF(pp.prev_price_eur, 0) - 1) * 100         AS daily_change_pct,
-        0.0                                                               AS allocation_pct
+        (lp.price_eur / NULLIF(pp.prev_price_eur, 0) - 1) * 100         AS daily_change_pct
     FROM holdings h
     JOIN assets a ON a.id = h.asset_id
     LEFT JOIN latest_prices lp ON lp.asset_id = h.asset_id
@@ -161,11 +149,15 @@ def get_holdings(
     """
 
     rows = conn.execute(query, params).fetchall()
+    positions = _avco_positions(conn, latest_date, broker_list)
     result = []
     for row in rows:
         def _f(v) -> Optional[float]:
             return float(v) if v is not None else None
 
+        shares = float(row[7])
+        price, price_eur = _f(row[8]), _f(row[9])
+        avg_eur, avg_ccy, open_brokers = positions[row[0]]
         result.append(
             HoldingRow(
                 asset_id=row[0],
@@ -175,19 +167,19 @@ def get_holdings(
                 currency=row[4],
                 image_url=row[5],
                 manual_price=bool(row[6]),
-                broker=row[7],
-                total_shares=float(row[8]),
-                avg_buy_price_eur=float(row[9]),
-                avg_buy_price=float(row[10]),
-                current_price=_f(row[11]),
-                current_price_eur=_f(row[12]),
-                value_eur=_f(row[13]),
-                value_ccy=_f(row[14]),
-                pnl_eur=_f(row[15]),
-                pnl_ccy=_f(row[16]),
-                gain_pct=_f(row[17]),
-                daily_change_pct=_f(row[18]),
-                allocation_pct=float(row[19]),
+                broker=open_brokers,
+                total_shares=shares,
+                avg_buy_price_eur=avg_eur,
+                avg_buy_price=avg_ccy,
+                current_price=price,
+                current_price_eur=price_eur,
+                value_eur=_f(row[10]),
+                value_ccy=_f(row[11]),
+                pnl_eur=shares * (price_eur - avg_eur) if price_eur is not None else None,
+                pnl_ccy=shares * (price - avg_ccy) if price is not None else None,
+                gain_pct=(price_eur / avg_eur - 1) * 100 if price_eur is not None and avg_eur else None,
+                daily_change_pct=_f(row[12]),
+                allocation_pct=0.0,
             )
         )
 
@@ -224,6 +216,62 @@ def get_holdings(
             result = result + balance_rows
 
     return result
+
+
+def _avco_positions(
+    conn: duckdb.DuckDBPyConnection,
+    up_to: date,
+    broker_list: list[str],
+) -> dict[int, tuple[float, float, str]]:
+    """
+    Running AVCO per asset: {asset_id: (avg_cost_eur, avg_cost_native, open_brokers)}.
+
+    Sells keep the average; a full exit resets it, so lots closed long ago do not
+    leak into a new position. The native price of a trade booked in another currency
+    (e.g. a USD stock bought in EUR on Trade Republic) comes from price_eur and the
+    asset's own price/price_eur ratio on the trade date (falls back to the latest one).
+    """
+    params: list = [up_to]
+    broker_filter = _in_clause("t.broker", broker_list, params)
+    rows = conn.execute(f"""
+        SELECT t.asset_id, t.type, t.broker, t.shares::DOUBLE, t.price_eur::DOUBLE,
+               CASE WHEN t.currency = a.currency THEN t.price::DOUBLE
+                    ELSE COALESCE(
+                        t.price_eur::DOUBLE * p.price::DOUBLE / NULLIF(p.price_eur::DOUBLE, 0),
+                        t.price_eur::DOUBLE * (
+                            SELECT price::DOUBLE / NULLIF(price_eur::DOUBLE, 0) FROM prices
+                            WHERE asset_id = t.asset_id ORDER BY date DESC LIMIT 1),
+                        t.price::DOUBLE)
+               END AS price_native
+        FROM transactions t
+        JOIN assets a ON a.id = t.asset_id
+        ASOF LEFT JOIN prices p ON p.asset_id = t.asset_id AND t.date >= p.date
+        WHERE t.date <= ? {broker_filter}
+        ORDER BY t.asset_id, t.date, t.id
+    """, params).fetchall()
+
+    state: dict[int, list] = {}  # asset_id → [shares, avg_eur, avg_native, {broker: shares}]
+    for asset_id, tx_type, tx_broker, shares, price_eur, price_native in rows:
+        s = state.setdefault(asset_id, [0.0, 0.0, 0.0, {}])
+        by_broker = s[3]
+        if tx_type == "buy":
+            total = s[0] + shares
+            s[1] = (s[0] * s[1] + shares * price_eur) / total
+            s[2] = (s[0] * s[2] + shares * price_native) / total
+            s[0] = total
+            by_broker[tx_broker] = by_broker.get(tx_broker, 0.0) + shares
+        else:
+            s[0] = max(s[0] - shares, 0.0)
+            by_broker[tx_broker] = by_broker.get(tx_broker, 0.0) - shares
+
+    return {
+        asset_id: (
+            s[1],
+            s[2],
+            ", ".join(sorted(b for b, q in s[3].items() if q > 0.000001)) or ", ".join(sorted(s[3])),
+        )
+        for asset_id, s in state.items()
+    }
 
 
 def _get_balance_holdings(
